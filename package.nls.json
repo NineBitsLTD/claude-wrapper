@@ -1,9 +1,6 @@
 {
   "description": "Chat with Claude Code (a wrapper around the claude CLI): projects, history, processes and subagents on the left, the chat in the right panel.",
   "view.projects": "Projects",
-  "view.history": "History",
-  "view.processes": "Processes",
-  "view.agents": "Subagents",
   "view.chat": "Chat",
   "cmd.refresh": "Refresh",
   "cmd.newChat": "New Chat",
@@ -14,15 +11,5 @@
   "cmd.deleteSession": "Move Session to Trash",
   "cmd.stopProcess": "Stop Process",
   "cmd.stopAgent": "Stop Subagent",
-  "cmd.restartServer": "Restart Server",
-  "cmd.showServerLog": "Server Log",
-  "config.port": "Port of the local wrapper server (127.0.0.1). The server is shared by all VS Code windows and keeps running after they close.",
-  "cmd.procFinished": "Show Finished Processes",
-  "cmd.procFinished.on": "Hide Finished Processes",
-  "cmd.procAllProjects": "Show Processes of All Projects",
-  "cmd.procAllProjects.on": "Only This Project’s Processes",
-  "cmd.agentFinished": "Show Subagents Finished in the Last Hour",
-  "cmd.agentFinished.on": "Hide Finished Subagents",
-  "cmd.agentAllProjects": "Show Subagents of All Projects",
-  "cmd.agentAllProjects.on": "Only This Project’s Subagents"
+  "container.projects": "Projects"
 }

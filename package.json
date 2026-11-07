@@ -2,7 +2,7 @@
   "name": "claude-wrapper",
   "displayName": "Claude Wrapper",
   "description": "%description%",
-  "version": "1.0.3",
+  "version": "1.1.0",
   "publisher": "ninebits",
   "icon": "resources/icon.png",
   "license": "UNLICENSED",
@@ -35,7 +35,7 @@
       "activitybar": [
         {
           "id": "claudeWrapper",
-          "title": "Claude Wrapper",
+          "title": "%container.projects%",
           "icon": "media/projects.svg"
         }
       ],
@@ -53,23 +53,6 @@
           "type": "webview",
           "id": "claudeWrapper.projects",
           "name": "%view.projects%"
-        },
-        {
-          "type": "webview",
-          "id": "claudeWrapper.history",
-          "name": "%view.history%"
-        },
-        {
-          "type": "webview",
-          "id": "claudeWrapper.processes",
-          "name": "%view.processes%",
-          "visibility": "collapsed"
-        },
-        {
-          "type": "webview",
-          "id": "claudeWrapper.agents",
-          "name": "%view.agents%",
-          "visibility": "collapsed"
         }
       ],
       "claudeWrapperChat": [
@@ -132,117 +115,19 @@
         "title": "%cmd.stopAgent%",
         "icon": "$(debug-stop)",
         "category": "Claude Wrapper"
-      },
-      {
-        "command": "claudeWrapper.restartServer",
-        "title": "%cmd.restartServer%",
-        "category": "Claude Wrapper"
-      },
-      {
-        "command": "claudeWrapper.showServerLog",
-        "title": "%cmd.showServerLog%",
-        "category": "Claude Wrapper"
-      },
-      {
-        "command": "claudeWrapper.toggleProcFinished",
-        "title": "%cmd.procFinished%",
-        "icon": "$(history)",
-        "category": "Claude Wrapper"
-      },
-      {
-        "command": "claudeWrapper.toggleProcFinished.on",
-        "title": "%cmd.procFinished.on%",
-        "icon": "$(pass-filled)",
-        "category": "Claude Wrapper"
-      },
-      {
-        "command": "claudeWrapper.toggleProcAllProjects",
-        "title": "%cmd.procAllProjects%",
-        "icon": "$(folder)",
-        "category": "Claude Wrapper"
-      },
-      {
-        "command": "claudeWrapper.toggleProcAllProjects.on",
-        "title": "%cmd.procAllProjects.on%",
-        "icon": "$(folder-library)",
-        "category": "Claude Wrapper"
-      },
-      {
-        "command": "claudeWrapper.toggleAgentFinished",
-        "title": "%cmd.agentFinished%",
-        "icon": "$(history)",
-        "category": "Claude Wrapper"
-      },
-      {
-        "command": "claudeWrapper.toggleAgentFinished.on",
-        "title": "%cmd.agentFinished.on%",
-        "icon": "$(pass-filled)",
-        "category": "Claude Wrapper"
-      },
-      {
-        "command": "claudeWrapper.toggleAgentAllProjects",
-        "title": "%cmd.agentAllProjects%",
-        "icon": "$(folder)",
-        "category": "Claude Wrapper"
-      },
-      {
-        "command": "claudeWrapper.toggleAgentAllProjects.on",
-        "title": "%cmd.agentAllProjects.on%",
-        "icon": "$(folder-library)",
-        "category": "Claude Wrapper"
       }
     ],
     "menus": {
       "view/title": [
         {
           "command": "claudeWrapper.refresh",
-          "when": "view =~ /^claudeWrapper\\.(projects|history|processes|agents)$/",
+          "when": "view == claudeWrapper.projects",
           "group": "navigation@9"
         },
         {
           "command": "claudeWrapper.newChat",
-          "when": "view == claudeWrapper.history || view == claudeWrapper.chat",
+          "when": "view == claudeWrapper.chat",
           "group": "navigation@1"
-        },
-        {
-          "command": "claudeWrapper.toggleProcFinished",
-          "when": "view == claudeWrapper.processes && !claudeWrapper.procFinished",
-          "group": "navigation@1"
-        },
-        {
-          "command": "claudeWrapper.toggleProcFinished.on",
-          "when": "view == claudeWrapper.processes && claudeWrapper.procFinished",
-          "group": "navigation@1"
-        },
-        {
-          "command": "claudeWrapper.toggleProcAllProjects",
-          "when": "view == claudeWrapper.processes && !claudeWrapper.procAllProjects",
-          "group": "navigation@2"
-        },
-        {
-          "command": "claudeWrapper.toggleProcAllProjects.on",
-          "when": "view == claudeWrapper.processes && claudeWrapper.procAllProjects",
-          "group": "navigation@2"
-        },
-        {
-          "command": "claudeWrapper.toggleAgentFinished",
-          "when": "view == claudeWrapper.agents && !claudeWrapper.agentFinished",
-          "group": "navigation@1"
-        },
-        {
-          "command": "claudeWrapper.toggleAgentFinished.on",
-          "when": "view == claudeWrapper.agents && claudeWrapper.agentFinished",
-          "group": "navigation@1"
-        },
-        {
-          "command": "claudeWrapper.toggleAgentAllProjects",
-          "when": "view == claudeWrapper.agents && !claudeWrapper.agentAllProjects",
-          "group": "navigation@2"
-        },
-        {
-          "command": "claudeWrapper.toggleAgentAllProjects.on",
-          "when": "view == claudeWrapper.agents && claudeWrapper.agentAllProjects",
-          "group": "navigation@2"
         }
       ],
       "commandPalette": [
@@ -273,34 +158,8 @@
         {
           "command": "claudeWrapper.stopAgent",
           "when": "false"
-        },
-        {
-          "command": "claudeWrapper.toggleProcFinished.on",
-          "when": "false"
-        },
-        {
-          "command": "claudeWrapper.toggleProcAllProjects.on",
-          "when": "false"
-        },
-        {
-          "command": "claudeWrapper.toggleAgentFinished.on",
-          "when": "false"
-        },
-        {
-          "command": "claudeWrapper.toggleAgentAllProjects.on",
-          "when": "false"
         }
       ]
-    },
-    "configuration": {
-      "title": "Claude Wrapper",
-      "properties": {
-        "claudeWrapper.port": {
-          "type": "number",
-          "default": 3210,
-          "description": "%config.port%"
-        }
-      }
     }
   }
 }

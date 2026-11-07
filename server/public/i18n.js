@@ -2,9 +2,9 @@
  * Claude Wrapper — the chat page's UI language.
  *
  * The page's strings are English in the code; this file holds the Russian translations and the
- * helpers, loaded before the page's scripts. The language: `?lang=` in the URL (the VS Code
- * extension passes VS Code's display language), else the browser's; Russian for `ru*`, English for
- * anything else.
+ * helpers, loaded before the page's scripts. The language: window.CW.lang (the VS Code extension's
+ * webview sets VS Code's display language) or `?lang=` in the URL, else the browser's; Russian for
+ * `ru*`, English for anything else.
  *
  * - tl(text, ...args): the translation of `text` (itself when there is none), with {0}, {1}…
  *   replaced by the arguments.
@@ -19,7 +19,7 @@
 'use strict';
 
 const LANG = (() => {
-  const q = new URLSearchParams(location.search).get('lang');
+  const q = window.CW?.lang ?? new URLSearchParams(location.search).get('lang');
   return /^ru\b/i.test(q || navigator.language || '') ? 'ru' : 'en';
 })();
 const LOCALE = LANG === 'ru' ? 'ru-RU' : 'en-US';

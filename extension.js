@@ -1,44 +1,41 @@
 /**
- * Claude Wrapper — VS Code extension around the wrapper server in server/ (a copy of Claude-AI's).
+ * Claude Wrapper — VS Code extension: a chat with Claude Code (the `claude` CLI) and its projects,
+ * history, processes and subagents.
  *
- * - Server: one per machine on 127.0.0.1:<claudeWrapper.port>, shared by all VS Code windows and
- *   left running when they close (chats in progress survive a window reload). On activation the
- *   extension attaches to it (/api/info must answer `server: 'claude-wrapper'`); a server of another
- *   version or of changed code (server/build-id.js) is restarted when no Claude run is working.
- *   It runs on VS Code's own Node (process.execPath with ELECTRON_RUN_AS_NODE=1), data in the extension's global storage
- *   (NINEBITS_DATA_DIR: .env, .run/, server.log).
- * - Activity bar "Claude Wrapper": webview views with rows of two or three lines (WebList): Projects
- *   (Claude Code's projects; a click opens the folder in VS Code; a folder that is gone asks where
- *   the project went and moves its history; buttons: a new window, move the history), History (sessions of this window's
- *   folder; a click opens one in the chat, the cross moves it to the Trash), Processes and
- *   Subagents (a click opens the details in an editor preview, Preview; the cross stops it; title-bar
- *   toggles for finished entries and for all projects, `filters`) — polled every few seconds while
- *   visible.
- * - Secondary side bar: the chat, the server's page in an iframe (`?embed=vscode&cwd=<folder>`) inside
- *   a webview. The page and the extension talk through the webview's script by postMessage:
- *   page -> extension { source: 'claude-wrapper', type: 'ready' | 'state' | 'openFile' | 'showView' },
- *   extension -> page { target: 'claude-wrapper', type: 'setProject' | 'loadSession' | 'newChat' | 'stop' | 'finish' };
- *   the page's state carries `busy`, and opening another folder while Claude works asks first
- *   (whenChatMayLeave).
+ * - No separate server: the wrapper's code in server/ (a copy of Claude-AI's server) runs in this
+ *   process — startServer() requires server/server.js and its routes are called directly through
+ *   server/inproc.js (getJson/postJson here, the chat page's fetch through its shim). Its data (the
+ *   process registry, the shell journal) is in the extension's global storage, shared by the windows;
+ *   each window has its own chats' claude runs, which end with their page or the window.
+ * - Activity bar "Projects": one webview view (Sidebar; a single view, so its title and the refresh
+ *   button sit in the container's title bar). The projects are its main list (a click opens the
+ *   folder in VS Code; a folder that is gone asks where the project went and moves its history;
+ *   buttons: a new window, move the history); under it the collapsible sections History (sessions of
+ *   this window's folder; a click opens one in the chat, the trash moves it to the Trash), Processes
+ *   and Subagents (a click opens the details in an editor preview, Preview; the cross stops it; header
+ *   toggles for finished entries and all projects, `filters`). Rows have two or three lines; the
+ *   open sections are polled every few seconds while the view is visible.
+ * - Secondary side bar: the chat, server/public/index.html right in a webview (chatHtml): window.CW
+ *   gives it { embed: 'vscode', cwd, lang }, public/vscode-shim.js its channel to this side and its
+ *   fetch('/api/...') bridge (messages 'http' / 'httpAbort' / 'httpReset', answers streamed back).
+ *   Other messages: page -> extension { source: 'claude-wrapper', type: 'ready' | 'state' |
+ *   'openFile' | 'showView' }, extension -> page { target: 'claude-wrapper', type: 'setProject' |
+ *   'loadSession' | 'newChat' | 'stop' | 'finish' }; the page's state carries `busy`, and opening
+ *   another folder while Claude works asks first (whenChatMayLeave).
  * - Language: English by default, Russian when VS Code's display language is Russian. The manifest
  *   strings come from package.nls*.json, this file's from l10n/bundle.l10n.*.json (vscode.l10n.t),
- *   and the page gets `lang=<vscode.env.language>` in its URL (its own dictionary: public/i18n.js).
+ *   and the page gets window.CW.lang (its own dictionary: public/i18n.js).
  */
 'use strict';
 
 const vscode = require('vscode');
-const http = require('http');
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
 const crypto = require('crypto');
-const { spawn, execFile } = require('child_process');
 
-const VERSION = require('./package.json').version;
-const { buildId } = require('./server/build-id');
-const SERVER_JS = path.join(__dirname, 'server', 'server.js');
-const ENV_TEMPLATE = path.join(__dirname, 'config', 'env.example');
 const POLL_MS = 3000;
+const PUBLIC_DIR = path.join(__dirname, 'server', 'public');
 
 const t = vscode.l10n.t;
 /** 'ru' or 'en': the UI language, VS Code's display language when we have it, English otherwise. */
@@ -46,118 +43,31 @@ const LANG = /^ru\b/i.test(vscode.env.language) ? 'ru' : 'en';
 const LOCALE = LANG === 'ru' ? 'ru-RU' : 'en-US';
 
 let ctx;
-let dataDir;
-let serverReady = null; // Promise of the running server
+let server = null;      // server/server.js, running in this process
+let inproc = null;      // server/inproc.js
 let chat = null;        // ChatView
 
-const port = () => vscode.workspace.getConfiguration('claudeWrapper').get('port') || 3210;
-const base = () => `http://127.0.0.1:${port()}`;
 /** This window's project: its first workspace folder. */
 const folder = () => vscode.workspace.workspaceFolders?.[0]?.uri.fsPath || null;
 
 // ---------------------------------------------------------------------------------------------
-// HTTP to the server
-
-function request(method, pathname, body, timeout = 10000) {
-  return new Promise((resolve, reject) => {
-    const data = body == null ? null : Buffer.from(JSON.stringify(body));
-    const req = http.request(base() + pathname, {
-      method,
-      timeout,
-      headers: data ? { 'Content-Type': 'application/json', 'Content-Length': data.length } : {},
-    }, (res) => {
-      const chunks = [];
-      res.on('data', (c) => chunks.push(c));
-      res.on('end', () => {
-        let json = null;
-        try { json = JSON.parse(Buffer.concat(chunks).toString('utf8')); } catch {}
-        if (res.statusCode >= 400) reject(Object.assign(new Error(json?.error || `HTTP ${res.statusCode}`), { status: res.statusCode }));
-        else resolve(json);
-      });
-    });
-    req.on('timeout', () => req.destroy(new Error('timeout')));
-    req.on('error', reject);
-    req.end(data);
-  });
-}
-const getJson = (p) => request('GET', p);
-const postJson = (p, body) => request('POST', p, body);
-
-// ---------------------------------------------------------------------------------------------
-// Server
-
-async function serverInfo() {
-  try { return await request('GET', '/api/info', null, 1500); } catch { return null; }
-}
-
-/** Pid listening on our port (to stop a server we did not start in this window). */
-function listenerPid() {
-  return new Promise((resolve) => {
-    execFile('lsof', ['-ti', `tcp:${port()}`, '-sTCP:LISTEN'], (err, out) => resolve(Number(String(out || '').trim().split('\n')[0]) || null));
-  });
-}
-
-function startServer() {
-  fs.mkdirSync(dataDir, { recursive: true });
-  const envFile = path.join(dataDir, '.env');
-  if (!fs.existsSync(envFile) && fs.existsSync(ENV_TEMPLATE)) fs.copyFileSync(ENV_TEMPLATE, envFile);
-  // The extension host's own variables stay out of the server and so out of claude runs.
-  const env = {};
-  for (const [k, v] of Object.entries(process.env)) {
-    if (!/^(VSCODE_|ELECTRON_|CLAUDECODE|CLAUDE_CODE_|CLAUDE_WEB_|NINEBITS_|APPLICATION_INSIGHTS)/.test(k)) env[k] = v;
-  }
-  Object.assign(env, { ELECTRON_RUN_AS_NODE: '1', NINEBITS_DATA_DIR: dataDir, PORT: String(port()), CLAUDE_CWD: os.homedir() });
-  const logFile = path.join(dataDir, 'server.log');
-  try { if (fs.statSync(logFile).size > 5 * 1024 * 1024) fs.renameSync(logFile, logFile + '.1'); } catch {}
-  const out = fs.openSync(logFile, 'a');
-  fs.writeSync(out, `\n=== ${new Date().toISOString()} starting server ${VERSION} on :${port()} ===\n`);
-  const child = spawn(process.execPath, [SERVER_JS], { env, cwd: os.homedir(), detached: true, stdio: ['ignore', out, out] });
-  child.unref();
-  fs.closeSync(out);
-}
-
-async function waitFor(check, ms) {
-  for (const end = Date.now() + ms; Date.now() < end;) {
-    if (await check()) return true;
-    await new Promise((r) => setTimeout(r, 300));
-  }
-  return false;
-}
-
-async function stopServer(pid) {
-  pid = pid || (await listenerPid());
-  if (!pid) return;
-  try { process.kill(pid, 'SIGTERM'); } catch {}
-  await waitFor(async () => !(await serverInfo()), 5000);
-}
+// The server's code, in this process: its routes are called directly (server/inproc.js)
 
 /**
- * Attaches to the running server, or starts one; a server of another version or of changed code
- * (server/build-id.js) is replaced when idle.
+ * Loads and starts the server's code. Its data (the process registry, the shell journal) lives in
+ * the extension's global storage, shared by the windows; NINEBITS_DATA_DIR tells server/paths.js
+ * (cleanEnv keeps it out of the claude processes).
  */
-async function ensureServer({ restart = false } = {}) {
-  let info = await serverInfo();
-  if (info && info.server !== 'claude-wrapper') {
-    throw new Error(t('Port {0} is taken by another server (not Claude Wrapper). Set another one in the claudeWrapper.port setting.', port()));
-  }
-  if (info && (restart || info.version !== VERSION || info.build !== buildId())) {
-    const status = await getJson('/api/status').catch(() => ({ activeRuns: 0 }));
-    if (restart || !status.activeRuns) {
-      await stopServer(info.pid);
-      info = null;
-    }
-  }
-  if (!info) {
-    startServer();
-    if (!(await waitFor(serverInfo, 15000))) throw new Error(t('The server did not start — see “Claude Wrapper: Server Log”'));
-  }
+function startServer(context) {
+  fs.mkdirSync(context.globalStorageUri.fsPath, { recursive: true });
+  process.env.NINEBITS_DATA_DIR = context.globalStorageUri.fsPath;
+  server = require('./server/server.js');
+  inproc = require('./server/inproc.js');
+  server.start();
 }
 
-function serverPromise(opts) {
-  serverReady = ensureServer(opts);
-  serverReady.catch((e) => vscode.window.showErrorMessage(`Claude Wrapper: ${e.message}`));
-  return serverReady;
-}
+const getJson = (p) => inproc.call(server.handleRequest, 'GET', p);
+const postJson = (p, body) => inproc.call(server.handleRequest, 'POST', p, body);
 
 // ---------------------------------------------------------------------------------------------
 // Formatting
@@ -182,10 +92,13 @@ const encodeProjectDir = (p) => p.replace(/[^a-zA-Z0-9]/g, '-');
 // it differs (so expansion and selection survive the polling).
 
 // ---------------------------------------------------------------------------------------------
-// Projects, History, Processes, Subagents: webview views (a tree item has one line; a row gets two
-// or three here). Rows are rendered on this side (escaped HTML) and replace the list when they change; the
-// view's script only folds children (kept in the webview's state) and sends clicks on elements
-// with data-act ("open" on a row's title, a cross for delete/stop) with the row's data-key.
+// The side bar: one webview view, "Projects" (a single view, so VS Code puts its title and its refresh
+// button in the container's title bar, like the Explorer's). The projects are its main list; History,
+// Processes and Subagents are collapsible sections under it, with their buttons in their headers.
+// Rows (two or three lines each; a tree item would have one) are rendered on this side as escaped
+// HTML and replace a section's body when it changes; the view's script folds rows and sections (kept
+// in the webview's state) and sends clicks: data-act on a row ("open" on its title, a cross for
+// delete/stop) with the row's data-key and its section, data-hact on a header's buttons.
 
 const LIST_CSS = `
   body { margin: 0; padding: 2px 0; font: var(--vscode-font-size) var(--vscode-font-family); color: var(--vscode-foreground); }
@@ -212,34 +125,79 @@ const LIST_CSS = `
     border-radius: 5px; display: flex; align-items: center; justify-content: center; }
   .x:hover { background: var(--vscode-toolbar-hoverBackground); }
   .node.folded > .kids { display: none; }
+  /* Sections: the projects fill the top, each open section shares the rest; a body scrolls. */
+  html, body { height: 100%; }
+  body { padding: 0; overflow: hidden; }
+  .layout { display: flex; flex-direction: column; height: 100%; }
+  .sec { display: flex; flex-direction: column; min-height: 0; }
+  .sec.main { flex: 2 1 0; min-height: 66px; }
+  .sec.sub { flex: 0 0 auto; border-top: 1px solid var(--vscode-sideBarSectionHeader-border, var(--vscode-panel-border, transparent)); }
+  .sec.sub:not(.collapsed) { flex: 1 1 0; min-height: 88px; }
+  .body { flex: 1; min-height: 0; overflow: auto; padding: 2px 0; }
+  .sec.collapsed .body { display: none; }
+  header { display: flex; align-items: center; height: 22px; padding-right: 6px; cursor: pointer; user-select: none; flex: none;
+    font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: .02em;
+    background: var(--vscode-sideBarSectionHeader-background); color: var(--vscode-sideBarSectionHeader-foreground, var(--vscode-foreground)); }
+  header .chev { width: 20px; display: flex; justify-content: center; }
+  header .label { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  header .tools { display: flex; gap: 2px; }
+  header .tools button { visibility: hidden; border: 0; background: none; cursor: pointer; width: 22px; height: 20px; padding: 0;
+    border-radius: 5px; display: flex; align-items: center; justify-content: center; }
+  header:hover .tools button, .sec:focus-within header .tools button, header .tools button.on { visibility: visible; }
+  header .tools button:hover { background: var(--vscode-toolbar-hoverBackground); }
+  header .tools button.on { background: var(--vscode-inputOption-activeBackground, var(--vscode-toolbar-activeBackground)); }
 `;
 
 const LIST_SCRIPT = `
   const vscode = acquireVsCodeApi();
-  const list = document.getElementById('list');
   const state = vscode.getState() || { folded: [] };
   const folded = new Set(state.folded);
-  const applyFolds = () => {
-    for (const n of list.querySelectorAll('.node')) {
-      const f = folded.has(n.dataset.key);
+  const save = () => vscode.setState({ folded: [...folded] });
+  const keyOf = (node) => node.closest('.sec').dataset.sec + ':' + node.dataset.key;
+  const applyFolds = (root) => {
+    for (const n of root.querySelectorAll('.node')) {
+      const f = folded.has(keyOf(n));
       n.classList.toggle('folded', f);
       const b = n.querySelector(':scope > .row .fold');
       if (b && !b.classList.contains('none')) b.firstChild.className = 'codicon codicon-chevron-' + (f ? 'right' : 'down');
     }
   };
+  const secEl = (name) => document.querySelector('.sec[data-sec="' + name + '"]');
+  const setCollapsed = (name, c, tell) => {
+    const el = secEl(name);
+    if (!el || !el.classList.contains('sub')) return;
+    el.classList.toggle('collapsed', c);
+    el.querySelector('header .chev').firstChild.className = 'codicon codicon-chevron-' + (c ? 'right' : 'down');
+    if (tell) vscode.postMessage({ type: 'collapse', section: name, collapsed: c });
+  };
   window.addEventListener('message', (e) => {
-    if (e.data?.type === 'list') { list.innerHTML = e.data.html; applyFolds(); }
+    const m = e.data || {};
+    if (m.type === 'section') {
+      const body = secEl(m.name)?.querySelector('.body');
+      if (body) { body.innerHTML = m.html; applyFolds(body); }
+    } else if (m.type === 'sections') {
+      for (const [name, c] of Object.entries(m.collapsed || {})) setCollapsed(name, c, false);
+      for (const [name, on] of Object.entries(m.toggles || {})) document.querySelector('[data-hact="toggle:' + name + '"]')?.classList.toggle('on', on);
+    } else if (m.type === 'expand') {
+      setCollapsed(m.name, false, true);
+      secEl(m.name)?.scrollIntoView({ block: 'nearest' });
+    }
   });
-  list.addEventListener('click', (e) => {
+  document.addEventListener('click', (e) => {
+    const tool = e.target.closest('[data-hact]');
+    if (tool) return vscode.postMessage({ type: 'header', section: tool.closest('.sec').dataset.sec, act: tool.dataset.hact });
+    const header = e.target.closest('header');
+    if (header) { const sec = header.closest('.sec'); return setCollapsed(sec.dataset.sec, !sec.classList.contains('collapsed'), true); }
     const el = e.target.closest('[data-act]');
     if (!el) return;
-    const key = el.closest('.node')?.dataset.key;
+    const node = el.closest('.node');
     if (el.dataset.act === 'fold') {
-      if (folded.has(key)) folded.delete(key); else folded.add(key);
-      vscode.setState({ folded: [...folded] });
-      applyFolds();
+      const k = keyOf(node);
+      if (folded.has(k)) folded.delete(k); else folded.add(k);
+      save();
+      applyFolds(node.closest('.body'));
     } else {
-      vscode.postMessage({ type: el.dataset.act, key });
+      vscode.postMessage({ type: el.dataset.act, key: node?.dataset.key, section: el.closest('.sec').dataset.sec });
     }
   });
   vscode.postMessage({ type: 'ready' });
@@ -278,45 +236,111 @@ function rowHtml(o) {
 }
 const emptyHtml = (text) => `<div class="empty">${escapeHtml(text)}</div>`;
 
-/** Base of the list views: load() -> data, render(data) -> HTML, act(type, key) for clicks. */
-class WebList {
-  constructor(id) {
-    this.id = id;
-    this.view = null;
-    this.html = null;
+/** A part of the side bar: load() -> data, render(data) -> HTML, act(type, key) for clicks in it. */
+class Section {
+  constructor(name) {
+    this.name = name;
     this.data = null;
+  }
+  refresh(force = false) { return sidebar?.refreshSection(this, force); }
+}
+
+/**
+ * The side bar's webview view: the projects' list, then the History, Processes and Subagents
+ * sections (collapsed ones are not loaded; which are collapsed is kept in the global state).
+ */
+class Sidebar {
+  constructor(sections) {
+    this.id = 'claudeWrapper.projects';
+    this.view = null;
+    this.sections = sections; // { projects, history, processes, agents }
+    this.html = {};
+    this.collapsed = new Set(ctx.globalState.get('sidebar.collapsed', ['processes', 'agents']));
   }
   resolveWebviewView(view) {
     this.view = view;
-    this.html = null;
+    this.html = {};
     view.webview.options = webviewOptions();
-    view.webview.html = webviewDoc(view.webview, LIST_CSS, '<div id="list"></div>', LIST_SCRIPT);
-    view.webview.onDidReceiveMessage((m) => (m?.type === 'ready' ? this.refresh(true) : this.act(m?.type, m?.key)));
+    view.webview.html = webviewDoc(view.webview, LIST_CSS, sidebarBody(), LIST_SCRIPT);
+    view.webview.onDidReceiveMessage((m) => this.onMessage(m));
     view.onDidChangeVisibility(() => view.visible && this.refresh(true));
     view.onDidDispose(() => { this.view = null; });
   }
+  get visible() { return !!this.view?.visible; }
+  /** The section states (collapsed, the header toggles) to the view. */
+  postState() {
+    const collapsed = {};
+    for (const name of ['history', 'processes', 'agents']) collapsed[name] = this.collapsed.has(name);
+    const toggles = {};
+    for (const n of filters.names) toggles[n] = filters.get(n);
+    this.view?.webview.postMessage({ type: 'sections', collapsed, toggles });
+  }
   async refresh(force = false) {
-    if (!this.view) return;
+    for (const sec of Object.values(this.sections)) if (!this.collapsed.has(sec.name)) await this.refreshSection(sec, force);
+  }
+  async refreshSection(sec, force = false) {
+    if (!this.view || this.collapsed.has(sec.name)) return;
     let html;
     try {
-      await serverReady;
-      this.data = await this.load();
-      html = this.render(this.data);
+      sec.data = await sec.load();
+      html = sec.render(sec.data);
     } catch (e) {
       html = emptyHtml(t('Error: {0}', e.message));
     }
-    if (force || html !== this.html) {
-      this.html = html;
-      this.view?.webview.postMessage({ type: 'list', html });
+    if (force || html !== this.html[sec.name]) {
+      this.html[sec.name] = html;
+      this.view?.webview.postMessage({ type: 'section', name: sec.name, html });
     }
-    preview?.sync(this);
+    preview?.sync(sec);
   }
+  /** Opens a section and scrolls to it (the counts under the chat's input ask for that). */
+  expand(name) {
+    this.view?.webview.postMessage({ type: 'expand', name });
+  }
+  async onMessage(m) {
+    if (m?.type === 'ready') { this.html = {}; this.postState(); return this.refresh(true); }
+    if (m?.type === 'collapse') {
+      if (m.collapsed) this.collapsed.add(m.section); else this.collapsed.delete(m.section);
+      await ctx.globalState.update('sidebar.collapsed', [...this.collapsed]);
+      if (!m.collapsed) this.refreshSection(this.sections[m.section], true);
+      return;
+    }
+    const sec = this.sections[m?.section];
+    if (!sec) return;
+    if (m.type === 'header') {
+      if (m.act === 'newChat') return vscode.commands.executeCommand('claudeWrapper.newChat');
+      if (m.act === 'refresh') return this.refreshSection(sec, true);
+      const name = /^toggle:(\w+)$/.exec(m.act)?.[1];
+      if (name && filters.names.includes(name)) {
+        await filters.set(name, !filters.get(name));
+        this.postState();
+        return this.refreshSection(sec, true);
+      }
+      return;
+    }
+    sec.act(m.type, m.key);
+  }
+}
+
+/** The side bar's skeleton: the projects' body, then the sections with their header buttons. */
+function sidebarBody() {
+  const tool = (act, icon, title) => `<button data-hact="${act}" title="${escapeHtml(title)}">${codicon(icon)}</button>`;
+  const section = (name, label, tools) => `<section class="sec sub" data-sec="${name}"><header title="${escapeHtml(label)}">` +
+    `<span class="chev">${codicon('chevron-down')}</span><span class="label">${escapeHtml(label)}</span><span class="tools">${tools}</span></header>` +
+    `<div class="body"></div></section>`;
+  return '<div class="layout"><div class="sec main" data-sec="projects"><div class="body"></div></div>' +
+    section('history', t('History'), tool('newChat', 'add', t('New Chat')) + tool('refresh', 'refresh', t('Refresh'))) +
+    section('processes', t('Processes'), tool('toggle:procFinished', 'history', t('Show Finished Processes')) +
+      tool('toggle:procAllProjects', 'folder-library', t('Show Processes of All Projects')) + tool('refresh', 'refresh', t('Refresh'))) +
+    section('agents', t('Subagents'), tool('toggle:agentFinished', 'history', t('Show Subagents Finished in the Last Hour')) +
+      tool('toggle:agentAllProjects', 'folder-library', t('Show Subagents of All Projects')) + tool('refresh', 'refresh', t('Refresh'))) +
+    '</div>';
 }
 
 // --- Projects: Claude Code's projects; a click opens the folder in VS Code ---
 
-class ProjectsView extends WebList {
-  constructor() { super('claudeWrapper.projects'); }
+class ProjectsView extends Section {
+  constructor() { super('projects'); }
   async load() {
     const { projects } = await getJson('/api/projects');
     const here = folder();
@@ -356,8 +380,8 @@ class ProjectsView extends WebList {
 
 // --- History: the sessions of this window's folder; a click opens one in the chat ---
 
-class HistoryView extends WebList {
-  constructor() { super('claudeWrapper.history'); }
+class HistoryView extends Section {
+  constructor() { super('history'); }
   async load() {
     const cwd = folder();
     if (!cwd) return null;
@@ -409,8 +433,8 @@ function procTitle(p) {
 const isOrphan = (p) => !p.exited && p.ppid === 1 && p.kind !== 'claude';
 const fmtWhen = (iso) => new Date(iso).toLocaleString(LOCALE, { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' });
 
-class ProcessesView extends WebList {
-  constructor() { super('claudeWrapper.processes'); }
+class ProcessesView extends Section {
+  constructor() { super('processes'); }
   async load() {
     const cwd = folder();
     const q = new URLSearchParams();
@@ -478,8 +502,8 @@ const AGENT_STATUS = { running: t('working'), pending: t('waiting'), paused: t('
 const agentTitle = (a) => `${a.agent || 'agent'}${a.background ? ' ' + t('(background)') : ''}: ${a.description || t('no description')}`;
 const agentDur = (a) => fmtDur(a.usage?.duration_ms != null && a.ended ? a.usage.duration_ms : (a.ended || Date.now()) - a.started);
 
-class AgentsView extends WebList {
-  constructor() { super('claudeWrapper.agents'); }
+class AgentsView extends Section {
+  constructor() { super('agents'); }
   async load() {
     const cwd = folder();
     const q = new URLSearchParams();
@@ -776,37 +800,37 @@ class AgentSubject {
 }
 
 // ---------------------------------------------------------------------------------------------
-// Chat: the server's page in an iframe inside a webview view (secondary side bar).
+// Chat: the page (server/public/index.html) right in a webview view (secondary side bar). Its
+// fetch('/api/...') comes here as messages (public/vscode-shim.js) and goes to the server's routes.
+
+const TEXT_TYPE = /^(text\/|application\/(json|x-ndjson|javascript))/i;
 
 class ChatView {
   constructor() {
     this.view = null;
     this.ready = false;
     this.queue = [];
+    this.requests = new Map(); // the page's open fetches: id -> { abort }
     this.state = { cwd: null, sessionId: null, title: '' };
     this.onState = () => {};
   }
-  async resolveWebviewView(view) {
+  resolveWebviewView(view) {
     this.view = view;
-    this.ready = false;
-    view.webview.options = { enableScripts: true };
-    view.webview.html = page(`<p class="note">${escapeHtml(t('Starting the Claude Wrapper server…'))}</p>`, '');
+    view.webview.options = { enableScripts: true, localResourceRoots: [vscode.Uri.file(PUBLIC_DIR)] };
     view.webview.onDidReceiveMessage((m) => this.fromPage(m));
-    view.onDidDispose(() => { this.view = null; this.ready = false; });
-    try {
-      await serverReady;
-    } catch (e) {
-      view.webview.html = page(`<p class="note">${escapeHtml(t('The server did not start: {0}', e.message))}</p>`, '');
-      return;
-    }
+    view.onDidDispose(() => { this.endRequests(); this.view = null; this.ready = false; });
     this.load();
   }
   load() {
     if (!this.view) return;
     this.ready = false;
-    const q = new URLSearchParams({ embed: 'vscode', lang: LANG });
-    if (folder()) q.set('cwd', folder());
-    this.view.webview.html = page('', `${base()}/?${q}`);
+    this.endRequests();
+    this.view.webview.html = chatHtml(this.view.webview);
+  }
+  /** Ends the page's open requests (a chat's run ends with its stream, as with a closed connection). */
+  endRequests() {
+    for (const r of this.requests.values()) r.abort();
+    this.requests.clear();
   }
   /** To the page, or queued until it says it is ready. */
   post(msg) {
@@ -816,7 +840,29 @@ class ChatView {
   async reveal() {
     await vscode.commands.executeCommand('claudeWrapper.chat.focus');
   }
-  async fromPage(m) {
+  /** A fetch of the page: run by the server's handler, its answer streamed back (text as text). */
+  fetchFromPage({ id, method, url, headers, body }) {
+    const send = (msg) => this.view?.webview.postMessage({ type: 'http', id, ...msg });
+    let decoder = null;
+    const handle = inproc.request(server.handleRequest, { method, url, headers, body }, {
+      head: (status, h) => {
+        if (TEXT_TYPE.test(String(h['content-type'] || ''))) decoder = new (require('string_decoder').StringDecoder)('utf8');
+        send({ phase: 'head', status, headers: h });
+      },
+      chunk: (buf) => send(decoder ? { phase: 'chunk', chunk: decoder.write(buf) } : { phase: 'chunk', b64: buf.toString('base64') }),
+      end: () => {
+        const rest = decoder?.end();
+        if (rest) send({ phase: 'chunk', chunk: rest });
+        this.requests.delete(id);
+        send({ phase: 'end' });
+      },
+    });
+    this.requests.set(id, handle);
+  }
+  fromPage(m) {
+    if (m?.type === 'http') return this.fetchFromPage(m);
+    if (m?.type === 'httpAbort') { this.requests.get(m.id)?.abort(); this.requests.delete(m.id); return; }
+    if (m?.type === 'httpReset') return this.endRequests();
     if (!m || m.source !== 'claude-wrapper') return;
     if (m.type === 'ready') {
       this.ready = true;
@@ -825,8 +871,8 @@ class ChatView {
       this.state = { cwd: m.cwd, sessionId: m.sessionId, title: m.title, busy: !!m.busy };
       this.onState();
     } else if (m.type === 'showView' && ['processes', 'agents', 'history'].includes(m.view)) {
-      // From the counts under the chat's input: that view in the side bar, revealed and expanded.
-      vscode.commands.executeCommand(`claudeWrapper.${m.view}.focus`);
+      // From the counts under the chat's input: the side bar shown, that section opened.
+      vscode.commands.executeCommand('claudeWrapper.projects.focus').then(() => sidebar.expand(m.view));
     } else if (m.type === 'openFile' && typeof m.path === 'string') {
       const uri = vscode.Uri.file(m.path);
       const opts = {};
@@ -840,34 +886,28 @@ class ChatView {
   }
 }
 
-const escapeHtml = (s) => String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
-
-/** The webview's document: the page in a full-size iframe, and the message relay between the two. */
-function page(note, src) {
+/**
+ * The chat page for the webview: index.html as it is on disk, with a CSP (its inline scripts get a
+ * nonce), window.CW (what a browser reads from the URL), the fetch shim first and i18n.js from the
+ * extension's files.
+ */
+function chatHtml(webview) {
   const nonce = crypto.randomBytes(16).toString('base64');
-  const origin = `http://127.0.0.1:${port()}`;
-  return `<!DOCTYPE html>
-<html lang="${LANG}"><head><meta charset="utf-8">
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; frame-src ${origin}; style-src 'unsafe-inline'; script-src 'nonce-${nonce}';">
-<style>
-  html, body { margin: 0; padding: 0; height: 100%; overflow: hidden; background: var(--vscode-sideBar-background); color: var(--vscode-foreground); font-family: var(--vscode-font-family); }
-  iframe { border: 0; width: 100%; height: 100%; display: block; }
-  .note { padding: 12px 16px; opacity: .8; }
-</style></head><body>
-${note}${src ? `<iframe id="page" src="${escapeHtml(src)}" allow="clipboard-read; clipboard-write; microphone; autoplay"></iframe>` : ''}
-<script nonce="${nonce}">
-  const vscode = acquireVsCodeApi();
-  const frame = document.getElementById('page');
-  window.addEventListener('message', (e) => {
-    if (frame && e.source === frame.contentWindow) {
-      if (e.origin === ${JSON.stringify(origin)} && e.data && e.data.source === 'claude-wrapper') vscode.postMessage(e.data);
-    } else if (frame && e.data && e.data.target === 'claude-wrapper') {
-      frame.contentWindow.postMessage(e.data, ${JSON.stringify(origin)});
-    }
-  });
-</script>
-</body></html>`;
+  const uri = (name) => webview.asWebviewUri(vscode.Uri.file(path.join(PUBLIC_DIR, name)));
+  const src = webview.cspSource;
+  const csp = `default-src 'none'; script-src 'nonce-${nonce}'; style-src ${src} 'unsafe-inline'; img-src ${src} data: blob: https:; ` +
+    `media-src ${src} data: blob:; font-src ${src} data:; connect-src ${src} data: blob:;`;
+  const params = { embed: 'vscode', lang: LANG, ...(folder() ? { cwd: folder() } : {}) };
+  const head = `<meta http-equiv="Content-Security-Policy" content="${csp}">\n` +
+    `<script nonce="${nonce}">window.CW = ${JSON.stringify(params).replace(/</g, '\\u003c')};</script>\n` +
+    `<script nonce="${nonce}" src="${uri('vscode-shim.js')}"></script>\n`;
+  return fs.readFileSync(path.join(PUBLIC_DIR, 'index.html'), 'utf8')
+    .replace('<script src="i18n.js"></script>', `<script src="${uri('i18n.js')}"></script>`)
+    .replace(/<script(?=[\s>])/g, `<script nonce="${nonce}"`)
+    .replace(/<head>/, `<head>\n${head}`);
 }
+
+const escapeHtml = (s) => String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 
 // ---------------------------------------------------------------------------------------------
 // Commands
@@ -919,19 +959,18 @@ async function relinkProject(p) {
     if (r.settings) parts.push(t('project settings'));
     const open = t('Open Folder');
     const choice = await vscode.window.showInformationMessage(parts.length ? t('History moved ({0})', parts.join(', ')) : t('There was nothing to move'), open);
-    trees.forEach((tree) => tree.refresh());
+    sidebar.refresh(true);
     if (choice === open) await vscode.commands.executeCommand('vscode.openFolder', vscode.Uri.file(r.cwd), { forceNewWindow: false });
   } catch (e) {
     vscode.window.showErrorMessage(t('Could not move the history: {0}', e.message));
   }
 }
 
-let trees = [];
+let sidebar = null;
 let historyView = null, processesView = null, agentsView = null;
 
 /**
- * Toggles of the Processes and Subagents views (their title bars), kept per workspace and mirrored
- * into context keys claudeWrapper.<name> for the toggled state of the buttons:
+ * Toggles of the Processes and Subagents sections (buttons in their headers), kept per workspace:
  * procFinished / agentFinished — finished ones too (subagents: of the last hour);
  * procAllProjects / agentAllProjects — every project, not only this window's folder (processes: on
  * by default).
@@ -941,46 +980,32 @@ const filters = {
   // Processes of every project by default: what runs on the machine matters, wherever it came from.
   defaults: { procAllProjects: true },
   get(name) { return !!ctx.workspaceState.get('filter.' + name, !!this.defaults[name]); },
-  async set(name, value) {
-    await ctx.workspaceState.update('filter.' + name, value);
-    await vscode.commands.executeCommand('setContext', 'claudeWrapper.' + name, value);
-  },
-  init() { for (const n of this.names) vscode.commands.executeCommand('setContext', 'claudeWrapper.' + n, this.get(n)); },
+  set(name, value) { return ctx.workspaceState.update('filter.' + name, value); },
 };
 
 function activate(context) {
   ctx = context;
-  filters.init();
-  dataDir = context.globalStorageUri.fsPath;
-  serverPromise();
+  startServer(context);
 
   chat = new ChatView();
   context.subscriptions.push(vscode.window.registerWebviewViewProvider('claudeWrapper.chat', chat, { webviewOptions: { retainContextWhenHidden: true } }));
 
-  const projects = new ProjectsView();
-  const history = historyView = new HistoryView();
-  const processes = processesView = new ProcessesView();
-  const agents = agentsView = new AgentsView();
-  for (const v of [projects, history, processes, agents]) context.subscriptions.push(vscode.window.registerWebviewViewProvider(v.id, v));
-  trees = [projects, history, processes, agents];
-  chat.onState = () => history.refresh(true); // the open session gets its mark
-  const timer = setInterval(() => { for (const tree of trees) if (tree.view?.visible) tree.refresh(); }, POLL_MS);
+  historyView = new HistoryView();
+  processesView = new ProcessesView();
+  agentsView = new AgentsView();
+  sidebar = new Sidebar({ projects: new ProjectsView(), history: historyView, processes: processesView, agents: agentsView });
+  context.subscriptions.push(vscode.window.registerWebviewViewProvider(sidebar.id, sidebar));
+  chat.onState = () => historyView.refresh(true); // the open session gets its mark
+  const timer = setInterval(() => sidebar.visible && sidebar.refresh(), POLL_MS);
   context.subscriptions.push({ dispose: () => clearInterval(timer) });
-  serverReady.then(() => trees.forEach((tree) => tree.refresh()), () => trees.forEach((tree) => tree.refresh()));
 
   context.subscriptions.push(vscode.workspace.onDidChangeWorkspaceFolders(() => {
     if (folder()) chat.post({ type: 'setProject', cwd: folder() });
-    trees.forEach((tree) => tree.refresh(true));
+    sidebar.refresh(true);
   }));
 
   const cmd = (id, fn) => context.subscriptions.push(vscode.commands.registerCommand(id, fn));
-  cmd('claudeWrapper.refresh', () => trees.forEach((tree) => tree.refresh(true)));
-  const toggle = (name, tree) => async () => { await filters.set(name, !filters.get(name)); tree.refresh(true); };
-  for (const [name, tree] of [['procFinished', processes], ['procAllProjects', processes], ['agentFinished', agents], ['agentAllProjects', agents]]) {
-    const id = 'claudeWrapper.toggle' + name[0].toUpperCase() + name.slice(1);
-    cmd(id, toggle(name, tree));
-    cmd(id + '.on', toggle(name, tree)); // the same toggle, shown while it is on
-  }
+  cmd('claudeWrapper.refresh', () => sidebar.refresh(true));
   cmd('claudeWrapper.newChat', async () => { await chat.reveal(); chat.post({ type: 'newChat' }); });
   cmd('claudeWrapper.openProject', openProject);
   cmd('claudeWrapper.openProjectNewWindow', (p) => p?.cwd && vscode.commands.executeCommand('vscode.openFolder', vscode.Uri.file(p.cwd), { forceNewWindow: true }));
@@ -989,21 +1014,11 @@ function activate(context) {
   cmd('claudeWrapper.deleteSession', (session) => session?.id && deleteSession(session));
   cmd('claudeWrapper.stopProcess', (p) => p?.pid && stopProcess(p));
   cmd('claudeWrapper.stopAgent', (a) => a?.id && stopAgent(a));
-  cmd('claudeWrapper.restartServer', async () => {
-    const status = await getJson('/api/status').catch(() => ({ activeRuns: 0 }));
-    if (status.activeRuns) {
-      const yes = t('Restart');
-      if ((await vscode.window.showWarningMessage(t('Claude is working now ({0}). A restart will interrupt the answers in all windows.', status.activeRuns), { modal: true }, yes)) !== yes) return;
-    }
-    await vscode.window.withProgress({ location: vscode.ProgressLocation.Notification, title: t('Claude Wrapper: restarting the server…') }, () => serverPromise({ restart: true }).catch(() => {}));
-    chat.load();
-    trees.forEach((tree) => tree.refresh(true));
-  });
-  cmd('claudeWrapper.showServerLog', () => vscode.commands.executeCommand('vscode.open', vscode.Uri.file(path.join(dataDir, 'server.log'))));
 }
 
 function deactivate() {
-  // The server keeps running: other windows use it, and chats in progress survive a reload.
+  // The window goes: its chats' claude runs end (as when their page closed), the registry is saved.
+  server?.stop();
 }
 
 module.exports = { activate, deactivate };

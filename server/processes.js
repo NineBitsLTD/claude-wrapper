@@ -98,6 +98,20 @@ function snapshot() {
 const keyOf = (pid, started) => `${pid}@${started}`;
 
 /**
+ * The environment for claude and what it runs: ours without what belongs to the host — inside VS
+ * Code's extension host ELECTRON_RUN_AS_NODE is set (an Electron app started by Claude would run as
+ * Node), VSCODE_* would make claude take itself for a run in VS Code's terminal, CLAUDECODE /
+ * CLAUDE_CODE_* for one inside another Claude Code; the wrapper's own settings stay out too.
+ */
+function cleanEnv() {
+  const env = {};
+  for (const [k, v] of Object.entries(process.env)) {
+    if (!/^(VSCODE_|ELECTRON_|CLAUDECODE|CLAUDE_CODE_|CLAUDE_WEB_|NINEBITS_|APPLICATION_INSIGHTS)/.test(k)) env[k] = v;
+  }
+  return env;
+}
+
+/**
  * Claude Code processes that describe themselves in ~/.claude/sessions/<pid>.json and are alive
  * (same pid and start time): Map<pid, { sessionId, cwd, name, kind, entrypoint }>.
  */
@@ -252,6 +266,8 @@ class ProcessRegistry {
     this.idleIntervalMs = idleIntervalMs;
     /** key -> entry; entries from previous server instances are kept. */
     this.entries = new Map(readRegistry().map((e) => [keyOf(e.pid, e.started), e]));
+    /** Keys dropped here, kept out of the file on the next writes (see flush). */
+    this.removed = new Set();
     /** Processes seen once; registered only if still alive on the next scan. */
     this.pending = new Map();
     /** pgid -> { since, runId } from the shell journal. */
@@ -267,7 +283,7 @@ class ProcessRegistry {
   /** Env for a claude run so that its shells report their process groups. */
   childEnv(runId) {
     const env = {
-      ...process.env,
+      ...cleanEnv(),
       CLAUDE_CODE_SHELL_PREFIX: SHELL_PREFIX,
       CLAUDE_WEB_JOURNAL: JOURNAL_FILE,
       CLAUDE_WEB_RUN_ID: runId,
@@ -401,7 +417,7 @@ class ProcessRegistry {
       const p = procs.get(e.pid);
       if (!suspect(e) || !p || p.started !== e.started) continue;
       if (traceOwnership(p, ctx) === false) {
-        this.entries.delete(key);
+        this.forget(key);
         dropped++;
       }
     }
@@ -441,7 +457,7 @@ class ProcessRegistry {
     const reused = this.retireGroups(procs);
     for (const [key, e] of this.entries) {
       if (e.kind === 'child' && !e.exited && e.ppid === 1 && e.pid === e.pgid && reused.has(e.pgid)) {
-        this.entries.delete(key);
+        this.forget(key);
         changed = true;
       }
     }
@@ -537,7 +553,7 @@ class ProcessRegistry {
       if (e.exited) {
         const keep = e.kind === 'claude' || e.kind === 'server' ? KEEP_EXITED_RUN_MS : KEEP_EXITED_OTHER_MS;
         if (nowMs - Date.parse(e.exited) > keep) {
-          this.entries.delete(key);
+          this.forget(key);
           changed = true;
         }
       }
@@ -624,12 +640,30 @@ class ProcessRegistry {
     this.saveTimer.unref?.();
   }
 
-  /** Atomic write (temp file + rename): a crash never leaves a half-written registry. */
+  /** Drops an entry; a later flush won't take it back from the file. */
+  forget(key) {
+    this.entries.delete(key);
+    this.removed.add(key);
+  }
+
+  /**
+   * Atomic write (temp file + rename): a crash never leaves a half-written registry. Every VS Code
+   * window keeps a registry over the same file: entries only the file has (another window's) stay,
+   * except those this one dropped.
+   */
   flush() {
     clearTimeout(this.saveTimer);
     fs.mkdirSync(path.dirname(REGISTRY_FILE), { recursive: true });
     const tmp = `${REGISTRY_FILE}.${process.pid}.tmp`;
-    const data = { updated: new Date().toISOString(), serverPid: this.serverPid, processes: [...this.entries.values()] };
+    const all = new Map(this.entries);
+    const onDisk = new Set();
+    for (const e of readRegistry()) {
+      const key = keyOf(e.pid, e.started);
+      onDisk.add(key);
+      if (!all.has(key) && !this.removed.has(key)) all.set(key, e);
+    }
+    for (const key of this.removed) if (!onDisk.has(key)) this.removed.delete(key);
+    const data = { updated: new Date().toISOString(), serverPid: this.serverPid, processes: [...all.values()] };
     fs.writeFileSync(tmp, JSON.stringify(data, null, 2));
     fs.renameSync(tmp, REGISTRY_FILE);
   }
@@ -673,7 +707,7 @@ async function checkRegistry() {
   return rows;
 }
 
-module.exports = { ProcessRegistry, checkRegistry, REGISTRY_FILE, JOURNAL_FILE };
+module.exports = { ProcessRegistry, checkRegistry, cleanEnv, REGISTRY_FILE, JOURNAL_FILE };
 
 // CLI: inspect the registry even when the server is down.
 if (require.main === module) {

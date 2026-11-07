@@ -1,19 +1,22 @@
 #!/usr/bin/env node
 /**
- * Local web wrapper for the `claude` CLI — the server of the Claude Wrapper VS Code extension
- * (copied from Claude-AI's server; the test API, image generation, the Cloudflare tunnel, the
- * terminal, the file translation, the vendored editor/terminal libraries, the built-in voice
- * (Python Silero) and speech recognition (Swift helper) were left out; voice will come from VS Code).
+ * The `claude` CLI wrapper behind the Claude Wrapper VS Code extension (copied from Claude-AI's
+ * server; the test API, image generation, the Cloudflare tunnel, the terminal, the file translation,
+ * the vendored editor/terminal libraries, the built-in voice (Python Silero) and speech recognition
+ * (Swift helper) were left out; voice will come from VS Code).
  *
- * Serves a single-page UI and proxies prompts to `claude -p`, streaming
- * NDJSON events (stream-json output format) back to the browser. The extension shows the page in
- * a webview (`?embed=vscode`) and reads the projects, history, processes and subagents APIs for
- * its tree views.
+ * Routes (/api/...) for the chat page and the extension's side bar: prompts go to `claude -p`, its
+ * NDJSON events (stream-json output format) stream back; projects, history, processes, subagents,
+ * file operations.
  *
- * Usage:
- *   node server.js                  # http://127.0.0.1:3000, default cwd = current dir
- *                                   # (the project folder can be changed from the UI)
- *   PORT=4000 CLAUDE_CWD=~/project node server.js
+ * Two ways to run it:
+ * - In the extension (the normal way): extension.js requires this module, calls start() and passes
+ *   requests to handleRequest through inproc.js — no HTTP, no port; the chat page in the webview
+ *   reaches the routes through its fetch shim. Nothing process-wide is touched here (VS Code's
+ *   extension host is shared with other extensions): no .env, no signal handlers, no env edits.
+ * - Standalone, for working on the page in a browser:
+ *     node server.js                  # http://127.0.0.1:3000, settings from .env in the data dir
+ *     PORT=4000 CLAUDE_CWD=~/project node server.js
  *
  * No external dependencies — Node 18+ only.
  */
@@ -27,23 +30,18 @@ const crypto = require('crypto');
 const { spawn, execFile } = require('child_process');
 const { StringDecoder } = require('string_decoder');
 
-// The extension starts this server with VS Code's own binary as Node (ELECTRON_RUN_AS_NODE=1); claude
-// and the commands it runs must not inherit that (an Electron app started by Claude would run as Node).
-delete process.env.ELECTRON_RUN_AS_NODE;
-// Told by /api/info, so the extension attaches only to its own server of the same version.
+const STANDALONE = require.main === module;
+// Told by /api/info.
 const SERVER_VERSION = (() => { try { return require('../package.json').version; } catch { return '0'; } })();
-// Also told: the fingerprint of the code it started with, so the extension replaces it after edits.
-const SERVER_BUILD = require('./build-id').buildId();
 
 /**
- * Settings from .env next to this file (Node's built-in loader, no dependency). Loaded before
- * the local modules below, which read their settings when they load. Variables already set in
- * the shell win over the file. Names that came from the file are removed from process.env once
- * everything is configured (see below), so they configure the wrapper only and are not
- * inherited by the claude processes and the commands they run.
+ * Standalone only: settings from .env in the data dir (Node's built-in loader). Loaded before the
+ * local modules below, which read their settings when they load; variables already set in the shell
+ * win. Names that came from the file are removed from process.env once everything is configured, so
+ * they don't reach the claude processes.
  */
 const { ENV_FILE, RUN_DIR, fromData } = require('./paths');
-const envFromFile = (() => {
+const envFromFile = !STANDALONE ? [] : (() => {
   const before = new Set(Object.keys(process.env));
   try {
     process.loadEnvFile(ENV_FILE);
@@ -54,7 +52,7 @@ const envFromFile = (() => {
 })();
 
 const sessions = require('./sessions');
-const { ProcessRegistry } = require('./processes');
+const { ProcessRegistry, cleanEnv } = require('./processes');
 const cliModels = require('./cli-models');
 const agentTasks = require('./agent-tasks');
 const { handleFsOp, handleUpload } = require('./fileops');
@@ -70,7 +68,8 @@ const HTTPS_PORT = Number(process.env.CLAUDE_WEB_HTTPS_PORT) || 0;
 const TLS_CERT = fromData(process.env.CLAUDE_WEB_TLS_CERT || '.run/tls/localhost.pem');
 const TLS_KEY = fromData(process.env.CLAUDE_WEB_TLS_KEY || '.run/tls/localhost-key.pem');
 const CLAUDE_BIN = process.env.CLAUDE_BIN || 'claude';
-const WORK_DIR = expandHome(process.env.CLAUDE_CWD || process.cwd());
+// The default project folder (the page names its own): standalone the current one, in VS Code home.
+const WORK_DIR = expandHome(process.env.CLAUDE_CWD || (STANDALONE ? process.cwd() : os.homedir()));
 const INDEX_HTML = path.join(__dirname, 'public', 'index.html');
 const I18N_JS = path.join(__dirname, 'public', 'i18n.js');
 // Subagents of the main agent in the background (CLAUDE_CODE_FORK_SUBAGENT=1 for the runs).
@@ -87,8 +86,9 @@ const IDLE_KEEP_MS = Math.max(0, Number(process.env.CLAUDE_WEB_IDLE_KEEP_MIN ?? 
  */
 const runs = new Map();
 
-// Persistent list of processes started through the wrapper (see processes.js).
-const registry = new ProcessRegistry({ serverPid: process.pid });
+// Persistent list of Claude Code's processes (see processes.js). No serverPid: in the extension
+// this process is VS Code's extension host, whose other children (other extensions') aren't ours.
+const registry = new ProcessRegistry({ serverPid: null });
 
 // Everything above has read its settings: keep .env values out of child processes.
 for (const name of envFromFile) delete process.env[name];
@@ -129,6 +129,7 @@ function expandHome(p) {
  * cannot drive the local CLI through the user's browser (CSRF / DNS rebinding).
  */
 function isTrustedRequest(req) {
+  if (req.inproc) return true; // from the extension (inproc.js): no network involved
   // The page may be opened over HTTP (PORT) or HTTPS (HTTPS_PORT); each port has its own scheme.
   const origins = [`http://127.0.0.1:${PORT}`, `http://localhost:${PORT}`];
   if (HTTPS_PORT) origins.push(`https://127.0.0.1:${HTTPS_PORT}`, `https://localhost:${HTTPS_PORT}`);
@@ -560,7 +561,7 @@ function planUsage(fresh) {
       const request = { subtype: 'get_usage', skip_behaviors: true };
       const r = live
         ? await live.control(request)
-        : (await cliControl.oneShot({ claudeBin: CLAUDE_BIN, cwd: path.join(RUN_DIR, 'api-sandbox'), requests: [request], env: process.env }))[0];
+        : (await cliControl.oneShot({ claudeBin: CLAUDE_BIN, cwd: path.join(RUN_DIR, 'api-sandbox'), requests: [request], env: cleanEnv() }))[0];
       if (r.error) throw new Error(r.error);
       const data = { subscription_type: r.subscription_type, rate_limits_available: r.rate_limits_available, rate_limits: r.rate_limits };
       usageCache = { at: Date.now(), data };
@@ -680,7 +681,7 @@ async function handleSessionControl(req, res) {
   if (live && request.subtype !== 'get_context_usage') return sendJson(res, 409, { error: 'Claude is working in this session now — wait for the answer to end' });
   try {
     const [r] = await cliControl.oneShot({
-      claudeBin: CLAUDE_BIN, cwd, sessionId: body.sessionId, requests: [request], env: { ...process.env, CLAUDE_CODE_ENABLE_SDK_FILE_CHECKPOINTING: 'true' },
+      claudeBin: CLAUDE_BIN, cwd, sessionId: body.sessionId, requests: [request], env: { ...cleanEnv(), CLAUDE_CODE_ENABLE_SDK_FILE_CHECKPOINTING: 'true' },
       ...(request.subtype === 'side_question' ? { timeoutMs: SIDE_QUESTION_MS } : {}),
     });
     if (body.sessionId) sessions.markAsCli(body.sessionId).catch(() => {}); // the resumed process may have appended entries
@@ -1178,8 +1179,6 @@ function handleRequest(req, res) {
   });
 }
 
-const server = http.createServer(handleRequest);
-
 async function route(req, res) {
   const url = new URL(req.url, `http://${req.headers.host || HOST}`);
   if (!isTrustedRequest(req)) return sendJson(res, 403, { error: 'Forbidden' });
@@ -1208,7 +1207,7 @@ async function route(req, res) {
   if (req.method === 'GET' && url.pathname === '/api/info') {
     // models: the CLI's /model picker for the dropdown (cli-models.js; null while unknown).
     return sendJson(res, 200, {
-      server: 'claude-wrapper', version: SERVER_VERSION, build: SERVER_BUILD, pid: process.pid,
+      server: 'claude-wrapper', version: SERVER_VERSION, pid: process.pid,
       cwd: WORK_DIR, home: os.homedir(), tts: false, term: false,
       models: cliModels.list(), defaultModel: cliModels.defaultModel(),
     });
@@ -1365,41 +1364,54 @@ async function route(req, res) {
   sendJson(res, 404, { error: 'Not found' });
 }
 
-server.listen(PORT, HOST, () => {
-  console.log(`Claude web wrapper: http://${HOST}:${PORT}`);
-  console.log(`Working directory:  ${WORK_DIR}`);
-  console.log(`Settings:           ${envFromFile.length ? `${envFromFile.length} from ${ENV_FILE}` : `defaults (${ENV_FILE} not found or empty)`}`);
+/** Starts the background work: the process registry's scans, the model list. */
+function start() {
   registry.start();
   // One-shot claude processes (models, plan limits) run in an empty folder: no project hooks.
   fs.mkdirSync(path.join(RUN_DIR, 'api-sandbox'), { recursive: true });
-  // The model list for the dropdown; in an empty folder (no project hooks).
-  cliModels.refresh({ claudeBin: CLAUDE_BIN, cwd: path.join(RUN_DIR, 'api-sandbox'), env: process.env })
+  cliModels.refresh({ claudeBin: CLAUDE_BIN, cwd: path.join(RUN_DIR, 'api-sandbox'), env: cleanEnv() })
     .catch((e) => console.warn(`Model list: ${e.message} (using the CLI's cached catalog)`));
-});
-
-// Same app over HTTPS when CLAUDE_WEB_HTTPS_PORT is set (certificate from mkcert, see .env).
-if (HTTPS_PORT) {
-  let tls = null;
-  try {
-    tls = { cert: fs.readFileSync(TLS_CERT), key: fs.readFileSync(TLS_KEY) };
-  } catch (e) {
-    console.warn(`HTTPS is off: cannot read the certificate (${e.code || e.message}).`);
-    console.warn(`  Create one:  mkcert -cert-file ${TLS_CERT} -key-file ${TLS_KEY} localhost 127.0.0.1 ::1`);
-  }
-  if (tls) {
-    https.createServer(tls, handleRequest)
-      .on('error', (e) => console.warn(`HTTPS listener on ${HTTPS_PORT} failed: ${e.message}`))
-      .listen(HTTPS_PORT, HOST, () => console.log(`HTTPS:              https://localhost:${HTTPS_PORT}`));
-  }
 }
 
-// Persist the registry on shutdown; child processes are intentionally left running
-// so that they can be found and inspected after a restart.
+/** Ends what this process started for the chats (their pages are gone) and saves the registry. */
+function stop() {
+  for (const run of runs.values()) if (run.child.exitCode === null) run.child.kill('SIGTERM');
+  runs.clear();
+  try { registry.stop(); } catch {}
+}
 
+module.exports = { start, stop, handleRequest, activeRuns: () => [...runs.values()].filter((r) => r.child.exitCode === null && !r.waiting).length };
 
-for (const sig of ['SIGINT', 'SIGTERM', 'SIGHUP']) {
-  process.on(sig, () => {
-    try { registry.stop(); } catch {}
-    process.exit(0);
+if (STANDALONE) {
+  http.createServer(handleRequest).listen(PORT, HOST, () => {
+    console.log(`Claude web wrapper: http://${HOST}:${PORT}`);
+    console.log(`Working directory:  ${WORK_DIR}`);
+    console.log(`Settings:           ${envFromFile.length ? `${envFromFile.length} from ${ENV_FILE}` : `defaults (${ENV_FILE} not found or empty)`}`);
+    start();
   });
+
+  // Same app over HTTPS when CLAUDE_WEB_HTTPS_PORT is set (certificate from mkcert, see .env).
+  if (HTTPS_PORT) {
+    let tls = null;
+    try {
+      tls = { cert: fs.readFileSync(TLS_CERT), key: fs.readFileSync(TLS_KEY) };
+    } catch (e) {
+      console.warn(`HTTPS is off: cannot read the certificate (${e.code || e.message}).`);
+      console.warn(`  Create one:  mkcert -cert-file ${TLS_CERT} -key-file ${TLS_KEY} localhost 127.0.0.1 ::1`);
+    }
+    if (tls) {
+      https.createServer(tls, handleRequest)
+        .on('error', (e) => console.warn(`HTTPS listener on ${HTTPS_PORT} failed: ${e.message}`))
+        .listen(HTTPS_PORT, HOST, () => console.log(`HTTPS:              https://localhost:${HTTPS_PORT}`));
+    }
+  }
+
+  // Persist the registry on shutdown; child processes are intentionally left running
+  // so that they can be found and inspected after a restart.
+  for (const sig of ['SIGINT', 'SIGTERM', 'SIGHUP']) {
+    process.on(sig, () => {
+      try { registry.stop(); } catch {}
+      process.exit(0);
+    });
+  }
 }

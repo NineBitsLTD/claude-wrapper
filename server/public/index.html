@@ -13,7 +13,7 @@
     window.i18nDom = () => {};
   }
 </script>
-<script>if (/[?&]embed=vscode\b/.test(location.search)) document.documentElement.classList.add('embed');</script>
+<script>if (window.CW?.embed === 'vscode' || /[?&]embed=vscode\b/.test(location.search)) document.documentElement.classList.add('embed');</script>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Claude-AI</title>
 <style>
@@ -64,7 +64,8 @@
     background: var(--tool-bg); border: 1px solid var(--border); border-radius: 8px;
     padding: 6px 10px; font-size: 13px;
   }
-  details.tool summary { cursor: pointer; color: var(--muted); }
+  /* A long command or URL in the title wraps anywhere instead of widening the chat. */
+  details.tool summary { cursor: pointer; color: var(--muted); overflow-wrap: anywhere; word-break: break-word; min-width: 0; }
   details.tool summary b { color: var(--text); }
   details.tool.running { border-color: var(--accent); }
   details.tool.denied { border: 2px solid var(--error); }
@@ -320,6 +321,8 @@
   html.embed .chat-head .act-btn { width: 28px; height: 28px; }
   /* VS Code's side bar is narrow and its text small: the whole page 20% smaller there. */
   html.embed { zoom: .8; }
+  /* VS Code's webview gives body a side padding by default. */
+  html.embed body { padding: 0; }
   /* In VS Code the lists live in its side bar: under the input only how many, a click opens them there. */
   html.embed #tasks, html.embed #procs { display: none !important; }
   #counts { display: flex; gap: 14px; flex-wrap: wrap; max-width: 860px; margin: 6px auto 0; font-size: 12px; }
@@ -929,12 +932,14 @@
   let applied = null;                            // effort/ultracode the live process applies (get_settings)
   let cliDefaults = null;                        // what the CLI does in this project unasked: { applied, defaults } (server.js settingsDefaults)
   let cwd = store.get('claude.cwd') || '';        // project folder; '' until /api/info answers
-  // In the VS Code extension (?embed=vscode&cwd=…) the window's folder is the project; a session
-  // remembered for another folder is not restored.
-  const EMBED = new URLSearchParams(location.search).get('embed') === 'vscode';
-  const HOST_ORIGIN = EMBED ? [...(location.ancestorOrigins || [])].find((o) => o.startsWith('vscode-webview://')) || null : null;
+  // In the VS Code extension the window's folder is the project; a session remembered for another
+  // folder is not restored. The extension's webview sets window.CW (and window.cwHost, its channel,
+  // see vscode-shim.js); in a browser the same comes as ?embed=vscode&cwd=….
+  const pageParam = (name) => window.CW?.[name] ?? new URLSearchParams(location.search).get(name);
+  const EMBED = pageParam('embed') === 'vscode';
+  const HOST_ORIGIN = EMBED && window.cwHost ? 'vscode' : null;
   if (EMBED) {
-    const want = new URLSearchParams(location.search).get('cwd');
+    const want = pageParam('cwd');
     if (want && want !== cwd) {
       cwd = want;
       store.set('claude.cwd', want);
@@ -968,7 +973,7 @@
 
   /** A message to the extension's webview (state, files to open in VS Code); only inside it. */
   function toHost(msg) {
-    if (HOST_ORIGIN) window.parent.postMessage({ source: 'claude-wrapper', ...msg }, HOST_ORIGIN);
+    if (HOST_ORIGIN) window.cwHost.postMessage({ source: 'claude-wrapper', ...msg });
   }
 
   /**
@@ -10216,7 +10221,7 @@
     // From the extension: open a project folder's chat, a session from its history, a new chat.
     window.addEventListener('message', (e) => {
       const m = e.data;
-      if (e.source !== window.parent || !HOST_ORIGIN || e.origin !== HOST_ORIGIN || m?.target !== 'claude-wrapper') return;
+      if (!HOST_ORIGIN || m?.target !== 'claude-wrapper') return; // from the extension only
       if (m.type === 'setProject' && m.cwd && m.cwd !== cwd) setProject(m.cwd);
       else if (m.type === 'loadSession' && m.id) loadSession(m.id, { title: m.title || '' });
       else if (m.type === 'newChat') $('newChat').click();
