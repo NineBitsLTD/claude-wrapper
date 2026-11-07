@@ -14,7 +14,9 @@ VS Code's display language is Russian.
 
 No server process and no port: the wrapper's code runs inside the extension.
 
-Needs the `claude` CLI on the PATH.
+Needs the `claude` CLI on the PATH. The chat's voice: the
+[TTS / STT MD Aloud](https://github.com/NineBitsLTD/tts-stt-md-aloud) extension when it is installed
+(its voice, speed and volume), otherwise the system voice.
 
 ## Running from source
 

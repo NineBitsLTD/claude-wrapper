@@ -21,10 +21,12 @@
  *   gives it { embed: 'vscode', cwd, lang }, public/vscode-shim.js its channel to this side and its
  *   fetch('/api/...') bridge (messages 'http' / 'httpAbort' / 'httpReset', answers streamed back).
  *   Other messages: page -> extension { source: 'claude-wrapper', type: 'ready' | 'state' |
- *   'mcp' | 'openFile' | 'showView' }, extension -> page { target: 'claude-wrapper', type: 'setProject' |
- *   'loadSession' | 'newChat' | 'stop' | 'finish' }; the page's state carries `busy` (opening
- *   another folder while Claude works asks first, whenChatMayLeave) and `runId` (its live Claude
- *   process, whose MCP servers the side bar manages); 'mcp' is the servers a process reported at start.
+ *   'mcp' | 'tts' | 'openFile' | 'showView' }, extension -> page { target: 'claude-wrapper', type:
+ *   'setProject' | 'loadSession' | 'newChat' | 'stop' | 'finish' | 'tts' | 'ttsInfo' }. 'tts' is the
+ *   chat's speech, spoken by the TTS / STT MD Aloud extension when it is installed (`aloud`); the
+ *   page's state carries `busy` (opening another folder while Claude works asks first,
+ *   whenChatMayLeave) and `runId` (its live Claude process, whose MCP servers the side bar
+ *   manages); 'mcp' is the servers a process reported at start.
  * - Language: English by default, Russian when VS Code's display language is Russian. The manifest
  *   strings come from package.nls*.json, this file's from l10n/bundle.l10n.*.json (vscode.l10n.t),
  *   and the page gets window.CW.lang (its own dictionary: public/i18n.js).
@@ -1077,6 +1079,57 @@ class McpSubject {
 
 const TEXT_TYPE = /^(text\/|application\/(json|x-ndjson|javascript))/i;
 
+/**
+ * The chat's voice: the TTS / STT MD Aloud extension, when installed, speaks the page's phrases
+ * with the voice, speed and volume of its settings (its API: tts.speak / stop, settings(),
+ * onDidChangeSettings). The page asks with { type: 'tts', op: 'speak', id, text, lang, next } and
+ * gets { type: 'tts', id, done } or { id, error }; 'stop' ends its phrase, 'settings' shows the
+ * extension's side bar; { type: 'ttsInfo', info: { available, enabled, driver } } tells it whether
+ * to use it (without it the page speaks with the system voice itself).
+ */
+const ALOUD_ID = 'ninebits.tts-stt-md-aloud';
+const aloud = {
+  api: null,
+  watch: null,
+  gen: 0, // bumped by stop(): a phrase asked for before it is not spoken
+  onChange: () => {},
+  /** Its API, activating it on first use; null when it isn't installed (or fails to start). */
+  async get() {
+    const ext = vscode.extensions.getExtension(ALOUD_ID);
+    if (!ext) return (this.api = null);
+    if (!this.api) {
+      try {
+        this.api = ext.isActive ? ext.exports : await ext.activate();
+      } catch (e) {
+        console.warn(`[claude-wrapper] ${ALOUD_ID}: ${e.message}`);
+        return null;
+      }
+      this.watch?.dispose();
+      this.watch = this.api?.onDidChangeSettings?.(() => this.onChange()) || null;
+    }
+    return this.api?.tts ? this.api : null;
+  },
+  async info() {
+    const api = await this.get();
+    if (!api) return { available: false };
+    let tts = {};
+    try { tts = api.settings?.()?.tts || {}; } catch {}
+    return { available: true, enabled: tts.enabled !== false, driver: tts.driver || 'system' };
+  },
+  /** Ends the phrase it speaks for the chat (only the speech asked for through its API). */
+  stop() {
+    this.gen++;
+    try { this.api?.tts.stop(); } catch {}
+  },
+  /** Installed, removed or updated: its API is asked for again. */
+  reset() {
+    this.stop();
+    this.watch?.dispose();
+    this.watch = null;
+    this.api = null;
+  },
+};
+
 class ChatView {
   constructor() {
     this.view = null;
@@ -1091,13 +1144,14 @@ class ChatView {
     this.view = view;
     view.webview.options = { enableScripts: true, localResourceRoots: [vscode.Uri.file(PUBLIC_DIR)] };
     view.webview.onDidReceiveMessage((m) => this.fromPage(m));
-    view.onDidDispose(() => { this.endRequests(); this.view = null; this.ready = false; });
+    view.onDidDispose(() => { this.endRequests(); aloud.stop(); this.view = null; this.ready = false; });
     this.load();
   }
   load() {
     if (!this.view) return;
     this.ready = false;
     this.endRequests();
+    aloud.stop();
     this.view.webview.html = chatHtml(this.view.webview);
   }
   /** Ends the page's open requests (a chat's run ends with its stream, as with a closed connection). */
@@ -1132,6 +1186,30 @@ class ChatView {
     });
     this.requests.set(id, handle);
   }
+  /** Whether TTS / STT MD Aloud speaks for the page, and its settings. */
+  async postTtsInfo() {
+    this.post({ type: 'ttsInfo', info: await aloud.info() });
+  }
+  /** The page's speech through TTS / STT MD Aloud (see `aloud`). */
+  async speech(m) {
+    if (m.op === 'stop') return aloud.stop();
+    if (m.op === 'settings') {
+      return vscode.commands.executeCommand('tts-stt-md-aloud.speech.focus')
+        .then(undefined, () => vscode.commands.executeCommand('workbench.action.openSettings', '@ext:' + ALOUD_ID));
+    }
+    if (m.op !== 'speak' || typeof m.text !== 'string') return;
+    const reply = (r) => this.view?.webview.postMessage({ target: 'claude-wrapper', type: 'tts', id: m.id, ...r });
+    const gen = aloud.gen;
+    const api = await aloud.get();
+    if (!api) { this.postTtsInfo(); return reply({ error: t('the extension is not available') }); }
+    if (gen !== aloud.gen) return reply({ done: false }); // stopped while it was starting
+    const next = m.next && typeof m.next.text === 'string' ? { text: m.next.text, lang: m.next.lang } : undefined;
+    try {
+      reply({ done: await api.tts.speak(m.text, { lang: m.lang, ...(next ? { next } : {}) }) });
+    } catch (e) {
+      reply({ error: e.message || String(e) });
+    }
+  }
   fromPage(m) {
     if (m?.type === 'http') return this.fetchFromPage(m);
     if (m?.type === 'httpAbort') { this.requests.get(m.id)?.abort(); this.requests.delete(m.id); return; }
@@ -1140,6 +1218,9 @@ class ChatView {
     if (m.type === 'ready') {
       this.ready = true;
       for (const q of this.queue.splice(0)) this.post(q);
+      this.postTtsInfo();
+    } else if (m.type === 'tts') {
+      this.speech(m);
     } else if (m.type === 'state') {
       this.state = { cwd: m.cwd, sessionId: m.sessionId, title: m.title, busy: !!m.busy, runId: m.runId || null };
       this.onState();
@@ -1264,6 +1345,9 @@ function activate(context) {
 
   chat = new ChatView();
   context.subscriptions.push(vscode.window.registerWebviewViewProvider('claudeWrapper.chat', chat, { webviewOptions: { retainContextWhenHidden: true } }));
+  // The chat's voice: TTS / STT MD Aloud's settings changed, or it was installed / removed.
+  aloud.onChange = () => chat.postTtsInfo();
+  context.subscriptions.push(vscode.extensions.onDidChange(() => { aloud.reset(); chat.postTtsInfo(); }), { dispose: () => aloud.reset() });
 
   historyView = new HistoryView();
   processesView = new ProcessesView();
@@ -1301,6 +1385,7 @@ function activate(context) {
 
 function deactivate() {
   // The window goes: its chats' claude runs end (as when their page closed), the registry is saved.
+  aloud.stop();
   server?.stop();
 }
 

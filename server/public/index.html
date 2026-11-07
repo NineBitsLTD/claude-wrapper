@@ -314,6 +314,7 @@
     background: var(--user-bg); border: 1px solid var(--border); border-radius: 6px; color: var(--text); }
   .panel .task-out[hidden] { display: none; }
   .voice-wrap { position: relative; display: inline-flex; }
+  .voice-wrap[hidden] { display: none; }
   /* In the VS Code extension's webview (?embed=vscode) only the chat column stays: VS Code has the
      explorer, editor and terminal, and the extension shows projects, history, processes and subagents
      in its own views. The voice, microphone and settings buttons move into the chat head. */
@@ -366,13 +367,11 @@
   #dictBar .btn { padding: 2px 10px; font-size: 12px; }
   #voiceBtn.off, #micBtn.off { opacity: .6; }
   #voiceBtn[aria-expanded="true"], #micBtn[aria-expanded="true"] { color: var(--text); background: var(--user-bg); }
+  /* Speaking / listening: the speaker or the microphone itself blinks, no frame around it. */
   #micBtn.live, #voiceBtn.live { color: var(--accent); }
-  #micBtn.live::after, #voiceBtn.live::after {
-    content: ''; position: absolute; inset: 3px; border-radius: 8px; border: 2px solid var(--accent);
-    animation: mic-pulse 1.4s ease-in-out infinite;
-  }
+  #micBtn.live svg, #voiceBtn.live svg { animation: mic-pulse 1.4s ease-in-out infinite; }
   @keyframes mic-pulse { 50% { opacity: .25; } }
-  @media (prefers-reduced-motion: reduce) { #micBtn.live::after, #voiceBtn.live::after { animation: none; } }
+  @media (prefers-reduced-motion: reduce) { #micBtn.live svg, #voiceBtn.live svg { animation: none; } }
   .perm .voice-status .mic-toggle { margin-left: 8px; font-size: 12px; padding: 1px 8px; }
   .perm .voice-status { font-size: 13px; color: var(--muted); margin: -2px 0 8px; }
   .ask-q { border: none; margin: 0 0 12px; padding: 0; min-width: 0; }
@@ -2772,7 +2771,9 @@
   }
 
   const hearing = (() => {
-    const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+    // In VS Code there is no recognition yet (the Web Speech one needs Google's service, which
+    // Electron lacks; TTS / STT MD Aloud doesn't recognize speech yet): the microphone is off and hidden.
+    const SR = EMBED ? null : window.SpeechRecognition || window.webkitSpeechRecognition;
     const supported = !!SR;
     const btn = $('micBtn');
     const menu = $('micMenu');
@@ -3134,7 +3135,8 @@
   document.addEventListener('visibilitychange', () => hearing.update());
 
   /**
-   * Speech output (Web Speech API, system voices — no network). Categories can be switched
+   * Speech output (Web Speech API, system voices — no network; in VS Code the TTS / STT MD Aloud
+   * extension speaks when it is installed — its voice, speed and volume). Categories can be switched
    * separately in the 🔊 menu: permission prompts, Claude's answers, tool calls, end of work.
    * Phrases go through one queue so they don't cut each other off; a permission prompt or question
    * waits its turn too (nothing already queued is interrupted), and the microphone starts listening
@@ -3180,6 +3182,13 @@
     let sileroDownUntil = 0;
     let sileroError = '';
     let playing = null; // <audio> of the current Silero phrase
+    // In VS Code: the TTS / STT MD Aloud extension speaks each phrase (through this page's
+    // extension, see extension.js `aloud`) with the voice, speed and volume of its settings.
+    let host = null; // { available, enabled, driver } from the extension
+    let hostError = '';
+    const hostWaits = new Map(); // phrase id -> its answer handler
+    let hostSeq = 0;
+    const useHost = () => !!host?.available;
     let docPaused = false; // the file viewer's reading is paused (voice.pauseReading)
     // Speech rate for both voices: Silero audio plays faster/slower with its pitch kept
     // (playbackRate, applied at once, also to the phrase playing); the system voice reads at it
@@ -3194,7 +3203,7 @@
     }
     const useSilero = () => sileroAvailable && engine === 'silero' && Date.now() >= sileroDownUntil;
 
-    const on = (cat) => supported && enabled && cats[cat];
+    const on = (cat) => supported && enabled && cats[cat] && !(useHost() && !host.enabled);
 
     function pickVoices() {
       // Prefer the higher-quality "Enhanced"/"Premium" system voices, then local ones.
@@ -3202,6 +3211,13 @@
       const best = (re) => speechSynthesis.getVoices().filter((v) => re.test(v.lang)).sort((a, b) => score(b) - score(a))[0] || null;
       ruVoice = best(/^ru/i);
       enVoice = best(/^en/i);
+    }
+
+    /** The language of a phrase for TTS / STT MD Aloud's voice choice: as voiceFor, by its letters. */
+    function langOf(text) {
+      const cyr = (text.match(/[а-яё]/gi) || []).length;
+      const lat = (text.match(/[a-z]/gi) || []).length;
+      return lat > cyr * 2 ? 'en' : cyr ? 'ru' : LOCALE.slice(0, 2);
     }
 
     /** Mostly Latin text is read by an English voice, everything else by the Russian one. */
@@ -3237,6 +3253,7 @@
         setTimeout(finish, 450);
         return;
       }
+      if (useHost()) return speakHost(item, finish);
       if (!item.audio && useSilero()) prefetch(item);
       if (item.audio) {
         prefetch(queue.find((q) => q.chime === undefined)); // the next phrase is synthesized while this one plays
@@ -3267,6 +3284,27 @@
         return;
       }
       speakSystem(item, finish);
+    }
+
+    /**
+     * A phrase spoken by TTS / STT MD Aloud (the next one is prepared meanwhile). If it fails, this
+     * phrase is spoken by the system voice here and the menu shows why.
+     */
+    function speakHost(item, finish) {
+      const id = ++hostSeq;
+      item.hostId = id;
+      hostWaits.set(id, (m) => {
+        if (current !== item) return;
+        if (m.error) {
+          hostError = m.error;
+          renderMenu();
+          return speakSystem(item, finish);
+        }
+        if (hostError) { hostError = ''; renderMenu(); }
+        finish();
+      });
+      const next = queue.find((q) => q.chime === undefined && q.text);
+      toHost({ type: 'tts', op: 'speak', id, text: item.text, lang: langOf(item.text), next: next ? { text: next.text, lang: langOf(next.text) } : undefined });
     }
 
     function speakSystem(item, finish) {
@@ -3308,6 +3346,7 @@
       current = null; // its onend/onerror are ignored now
       hearing.speaking(null);
       item.ctrl?.abort();
+      if (item.hostId && hostWaits.delete(item.hostId)) toHost({ type: 'tts', op: 'stop' });
       if (playing) { playing.pause(); playing = null; }
       if (supported) speechSynthesis.cancel();
       item.onDone?.('interrupted');
@@ -3448,10 +3487,11 @@
     // --- menu ---
     function render() {
       const any = Object.values(cats).some(Boolean);
-      const on = supported && enabled && any;
+      const hostOff = useHost() && !host.enabled;
+      const on = supported && enabled && any && !hostOff;
       btn.innerHTML = on ? ICONS.speaker : ICONS.speakerOff;
       btn.classList.toggle('off', !on);
-      btn.title = !supported ? tl('The browser doesn’t support speech synthesis') : blockedNote || tl('Voice settings');
+      btn.title = !supported ? tl('The browser doesn’t support speech synthesis') : hostOff ? tl('Speech is turned off in TTS / STT MD Aloud') : blockedNote || tl('Voice settings');
     }
 
     function renderMenu() {
@@ -3479,6 +3519,15 @@
         if (!v) stopAll();
         renderMenu();
       }, { strong: true });
+      const hostSettings = () => {
+        const b = Object.assign(document.createElement('button'), { type: 'button', className: 'menu-row', textContent: tl('Voice, speed and volume…'), title: tl('The settings of TTS / STT MD Aloud') });
+        b.onclick = (e) => { e.stopPropagation(); toggleMenu(false); toHost({ type: 'tts', op: 'settings' }); };
+        menu.appendChild(b);
+      };
+      if (useHost() && !host.enabled) {
+        menu.appendChild(Object.assign(document.createElement('div'), { className: 'menu-note', textContent: tl('Speech is turned off in TTS / STT MD Aloud') }));
+        hostSettings();
+      }
       for (const [cat, label] of Object.entries(CATS)) {
         row(label, cats[cat], (v) => {
           cats[cat] = v;
@@ -3499,6 +3548,20 @@
         l.append(tl('Read the answer'), sel);
         menu.appendChild(l);
       }
+      if (useHost()) {
+        // The voice, its speed and volume are TTS / STT MD Aloud's.
+        const DRIVERS = { system: tl('system voices'), piper: 'Piper', silero: 'Silero' };
+        const driver = String(host.driver || 'system');
+        menu.appendChild(Object.assign(document.createElement('div'), { className: 'menu-section', textContent: tl('Voice') }));
+        menu.appendChild(Object.assign(document.createElement('div'), { className: 'menu-note', textContent: tl('TTS / STT MD Aloud speaks: {0}', DRIVERS[driver] || driver.replace(/^external:/, '')) }));
+        if (host.enabled) hostSettings();
+        const test = Object.assign(document.createElement('button'), { type: 'button', className: 'menu-row', textContent: tl('▶ Test the voice'), disabled: !enabled || !host.enabled });
+        test.onclick = (e) => { e.stopPropagation(); enqueue([{ cat: 'test', text: tl('Your confirmation is needed: {0}', tl('run the command {0}', 'npm install')) + '. ' + tl('Version 2.1, port 3443.') + ' The build finished successfully.' }]); };
+        menu.appendChild(test);
+        if (hostError) menu.appendChild(Object.assign(document.createElement('div'), { className: 'menu-note', textContent: '⚠️ ' + tl('TTS / STT MD Aloud: {0} — the system voice speaks for now', hostError) }));
+        return;
+      }
+      if (EMBED) menu.appendChild(Object.assign(document.createElement('div'), { className: 'menu-note', textContent: tl('More voices (Piper, Silero): the TTS / STT MD Aloud extension') }));
       {
         // Speech rate (both voices); double-click resets to normal.
         const l = document.createElement('label');
@@ -3595,6 +3658,22 @@
       refreshMenu: renderMenu,
       /** The server offers the Silero voice (from /api/info). */
       setSilero(available) { sileroAvailable = !!available; renderMenu(); },
+      /** In VS Code: whether TTS / STT MD Aloud speaks, and its settings ({ available, enabled, driver }). */
+      setHost(info) {
+        const had = useHost();
+        host = info || null;
+        // It went away mid-phrase: that phrase is over, the next ones in the system voice.
+        if (had && !useHost() && current?.hostId) { cancelCurrent(); pump(); }
+        if (useHost() && !host.enabled) stopAll();
+        renderMenu();
+      },
+      /** TTS / STT MD Aloud's answer for a phrase: { id, done } or { id, error }. */
+      hostDone(m) {
+        const handle = hostWaits.get(m.id);
+        if (!handle) return;
+        hostWaits.delete(m.id);
+        handle(m);
+      },
       /**
        * Reads a document aloud (the file viewer's button), part by part, whatever the chat voice
        * switches say: it was asked for explicitly. onStart(i) / onEnd(finished) report progress.
@@ -6261,14 +6340,32 @@
       e.preventDefault();
       files.forEach(add);
     });
-    form.addEventListener('dragover', (e) => { if ([...e.dataTransfer.items].some((i) => i.type.startsWith('image/'))) { e.preventDefault(); form.classList.add('dragover'); } });
-    form.addEventListener('dragleave', () => form.classList.remove('dragover'));
-    form.addEventListener('drop', (e) => {
+    // Images dropped anywhere on the page (not taken by something under the pointer, like the file
+    // tree) go into the message. In VS Code's webview the host takes a drag of files from outside
+    // (Finder) for itself, to open them in the editor, unless Shift is held: its script in the
+    // webview listens on the window — a dragenter the page hasn't handled, and every dragover, tell
+    // the workbench, which then makes the webview ignore the pointer until the drag ends. So an
+    // image drag is handled on the document, which the events reach first, and goes no further.
+    const hasImage = (dt) => !!dt && [...dt.items].some((i) => i.type.startsWith('image/'));
+    const claim = (e) => {
+      const ours = !e.defaultPrevented && hasImage(e.dataTransfer);
+      if (e.type === 'dragover') form.classList.toggle('dragover', ours);
+      if (!ours) return;
+      e.preventDefault();
+      e.stopPropagation();
+      e.dataTransfer.dropEffect = 'copy';
+    };
+    document.addEventListener('dragenter', claim);
+    document.addEventListener('dragover', claim);
+    document.addEventListener('dragleave', (e) => { if (!e.relatedTarget) form.classList.remove('dragover'); });
+    document.addEventListener('drop', (e) => {
       form.classList.remove('dragover');
-      const files = [...e.dataTransfer.files].filter((f) => f.type.startsWith('image/'));
+      if (e.defaultPrevented) return;
+      const files = [...(e.dataTransfer?.files || [])].filter((f) => f.type.startsWith('image/'));
       if (!files.length) return;
       e.preventDefault();
       files.forEach(add);
+      promptEl.focus();
     });
     return {
       get count() { return list.length; },
@@ -10200,6 +10297,7 @@
     const [gear, ...sound] = document.querySelectorAll('nav.activity .voice-wrap');
     const tools = Object.assign(document.createElement('span'), { className: 'head-tools' });
     tools.append(...sound, gear);
+    tools.querySelector('#micBtn').closest('.voice-wrap').hidden = true; // no speech recognition here yet (see hearing)
     $('mode').after(tools);
     // A menu of those buttons opens under its button, right-aligned; in a narrow panel (the block
     // wrapped to the left) it would stick out of the window: kept inside it.
@@ -10231,6 +10329,8 @@
       else if (m.type === 'newChat') $('newChat').click();
       else if (m.type === 'stop') stopRun();
       else if (m.type === 'finish' && busy()) askToFinish();
+      else if (m.type === 'ttsInfo') voice.setHost(m.info);
+      else if (m.type === 'tts') voice.hostDone(m);
     });
     // The extension asks before switching the folder while Claude works (it follows `busy`) and
     // manages the MCP servers of the chat's live process (`runId`).

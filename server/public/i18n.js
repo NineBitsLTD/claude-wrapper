@@ -930,7 +930,14 @@ const I18N_RU = {
   "💬 on the side — not recorded in the session": "💬 в сторону — не записано в сессию",
   "🔈 Speakers": "🔈 Динамики",
   "🗑 To the Trash": "🗑 В Корзину",
-  "🗜 <b>Summary</b> — replaced the history before compaction": "🗜 <b>Сводка</b> — заменила историю до сжатия"
+  "🗜 <b>Summary</b> — replaced the history before compaction": "🗜 <b>Сводка</b> — заменила историю до сжатия",
+  "Voice, speed and volume…": "Голос, скорость и громкость…",
+  "The settings of TTS / STT MD Aloud": "Настройки TTS / STT MD Aloud",
+  "Speech is turned off in TTS / STT MD Aloud": "Речь выключена в TTS / STT MD Aloud",
+  "system voices": "системные голоса",
+  "TTS / STT MD Aloud speaks: {0}": "Озвучивает TTS / STT MD Aloud: {0}",
+  "TTS / STT MD Aloud: {0} — the system voice speaks for now": "TTS / STT MD Aloud: {0} — пока читает системный голос",
+  "More voices (Piper, Silero): the TTS / STT MD Aloud extension": "Больше голосов (Piper, Silero) — в расширении TTS / STT MD Aloud"
 };
 
 const I18N = LANG === 'ru' ? I18N_RU : {};

@@ -22,11 +22,15 @@ Claude Wrapper — a VS Code extension (macOS only) around a copy of Claude-AI's
   page to a browser — handy for working on the page. Left out of the copy: the test API
   (api-gateway), image generation and its MCP bridge, the Cloudflare tunnel, the terminal, the file
   translation, the vendored Monaco/xterm, the built-in Python voice (tts-local) and the Swift speech
-  recognition (stt). Voice and recognition will come from a VS Code extension (tts-stt-md-aloud).
+  recognition (stt). The chat's voice comes from the VS Code extension TTS / STT MD Aloud
+  (`ninebits.tts-stt-md-aloud`, its API) when it is installed: its voice, speed and volume; without it
+  the page speaks with the system voice. Recognition will come from it too; until then the
+  microphone is hidden in VS Code.
 - `server/public/index.html` — the chat page. In the extension it is loaded right into the webview
   (extension.js chatHtml: a CSP with nonces, `window.CW` = { embed: 'vscode', cwd, lang }); there it
   hides everything but the chat column (VS Code has the explorer, editor, terminal) and moves the
-  voice/microphone/settings buttons into the chat head after the permission mode.
+  voice/settings buttons into the chat head after the permission mode; its phrases go to the
+  extension, which has TTS / STT MD Aloud speak them (extension.js `aloud`).
 - `server/public/vscode-shim.js` — loaded first in the webview: the page's channel to the extension
   (`window.cwHost`) and its `fetch('/api/...')` bridge (messages to the extension, the answer streamed
   back), so the page's code works as it does over HTTP.
