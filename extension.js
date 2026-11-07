@@ -188,17 +188,16 @@ const encodeProjectDir = (p) => p.replace(/[^a-zA-Z0-9]/g, '-');
 // with data-act ("open" on a row's title, a cross for delete/stop) with the row's data-key.
 
 const LIST_CSS = `
-  /* 20% under VS Code's font size: three lines a row still fit a narrow side bar. */
-  body { margin: 0; padding: 2px 0; font: calc(var(--vscode-font-size) * .8) var(--vscode-font-family); color: var(--vscode-foreground); }
+  body { margin: 0; padding: 2px 0; font: var(--vscode-font-size) var(--vscode-font-family); color: var(--vscode-foreground); }
   .empty { padding: 4px 20px; color: var(--vscode-descriptionForeground); }
-  .row { display: flex; align-items: flex-start; gap: 4px; padding: 2px 8px 2px calc(8px + var(--depth) * 12px); cursor: default; }
+  .row { display: flex; align-items: flex-start; gap: 4px; padding: 3px 8px 3px calc(8px + var(--depth) * 14px); cursor: default; }
   .row:hover { background: var(--vscode-list-hoverBackground); }
   .row:hover .x { visibility: visible; }
   .row.current { background: var(--vscode-list-inactiveSelectionBackground); }
-  .fold { width: 12px; flex: none; text-align: center; color: var(--vscode-icon-foreground); cursor: pointer; user-select: none; line-height: 1.4; }
+  .fold { width: 14px; flex: none; text-align: center; color: var(--vscode-icon-foreground); cursor: pointer; user-select: none; line-height: 18px; }
   .fold.none { visibility: hidden; }
   .main { flex: 1; min-width: 0; }
-  .title { display: flex; gap: 6px; line-height: 1.4; cursor: pointer; }
+  .title { display: flex; gap: 6px; line-height: 18px; cursor: pointer; }
   .title .name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .title:hover .name { text-decoration: underline; }
   .ico { flex: none; width: 14px; text-align: center; }
@@ -206,9 +205,9 @@ const LIST_CSS = `
   .warn .ico, .warn .state { color: var(--vscode-editorWarning-foreground, #cca700); }
   .bad .ico { color: var(--vscode-errorForeground); }
   .dim { opacity: .6; }
-  .line { color: var(--vscode-descriptionForeground); font-size: .92em; line-height: 1.35; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .line { color: var(--vscode-descriptionForeground); font-size: .92em; line-height: 16px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .x { visibility: hidden; flex: none; border: 0; background: none; color: var(--vscode-icon-foreground); cursor: pointer;
-    font-size: 1.1em; line-height: 1.4; width: 18px; padding: 0; border-radius: 3px; }
+    font-size: 14px; line-height: 18px; width: 20px; padding: 0; border-radius: 3px; }
   .x:hover { background: var(--vscode-toolbar-hoverBackground); color: var(--vscode-errorForeground); }
   .node.folded > .kids { display: none; }
 `;
