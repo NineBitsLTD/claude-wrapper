@@ -190,25 +190,27 @@ const encodeProjectDir = (p) => p.replace(/[^a-zA-Z0-9]/g, '-');
 const LIST_CSS = `
   body { margin: 0; padding: 2px 0; font: var(--vscode-font-size) var(--vscode-font-family); color: var(--vscode-foreground); }
   .empty { padding: 4px 20px; color: var(--vscode-descriptionForeground); }
-  .row { display: flex; align-items: flex-start; gap: 4px; padding: 3px 8px 3px calc(8px + var(--depth) * 14px); cursor: default; }
+  .row { display: flex; align-items: flex-start; gap: 2px; padding: 3px 8px 3px calc(4px + var(--depth) * 16px); cursor: default; }
   .row:hover { background: var(--vscode-list-hoverBackground); }
   .row:hover .x { visibility: visible; }
   .row.current { background: var(--vscode-list-inactiveSelectionBackground); }
-  .fold { width: 14px; flex: none; text-align: center; color: var(--vscode-icon-foreground); cursor: pointer; user-select: none; line-height: 18px; }
+  /* The twistie and the icons as in VS Code's trees: codicons in the icon colour. */
+  .codicon { font-size: 16px; line-height: 18px; color: var(--vscode-icon-foreground); }
+  .fold { width: 16px; height: 18px; flex: none; display: flex; align-items: center; justify-content: center; cursor: pointer; user-select: none; }
   .fold.none { visibility: hidden; }
   .main { flex: 1; min-width: 0; }
   .title { display: flex; gap: 6px; line-height: 18px; cursor: pointer; }
   .title .name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .title:hover .name { text-decoration: underline; }
-  .ico { flex: none; width: 14px; text-align: center; }
-  .accent .ico { color: var(--vscode-charts-orange, #d97757); }
-  .warn .ico, .warn .state { color: var(--vscode-editorWarning-foreground, #cca700); }
-  .bad .ico { color: var(--vscode-errorForeground); }
+  .ico { flex: none; width: 16px; display: flex; align-items: center; justify-content: center; }
+  .warn .state { color: var(--vscode-editorWarning-foreground, #cca700); }
+  /* The current entry (this window's project, the chat's session): its icon in orange. */
+  .current .ico .codicon { color: var(--vscode-charts-orange, #d97757); }
   .dim { opacity: .6; }
   .line { color: var(--vscode-descriptionForeground); font-size: .92em; line-height: 16px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .x { visibility: hidden; flex: none; border: 0; background: none; color: var(--vscode-icon-foreground); cursor: pointer;
-    font-size: 14px; line-height: 18px; width: 20px; padding: 0; border-radius: 3px; }
-  .x:hover { background: var(--vscode-toolbar-hoverBackground); color: var(--vscode-errorForeground); }
+  .x { visibility: hidden; flex: none; border: 0; background: none; cursor: pointer; width: 20px; height: 20px; padding: 0;
+    border-radius: 5px; display: flex; align-items: center; justify-content: center; }
+  .x:hover { background: var(--vscode-toolbar-hoverBackground); }
   .node.folded > .kids { display: none; }
 `;
 
@@ -222,7 +224,7 @@ const LIST_SCRIPT = `
       const f = folded.has(n.dataset.key);
       n.classList.toggle('folded', f);
       const b = n.querySelector(':scope > .row .fold');
-      if (b && !b.classList.contains('none')) b.textContent = f ? '▸' : '▾';
+      if (b && !b.classList.contains('none')) b.firstChild.className = 'codicon codicon-chevron-' + (f ? 'right' : 'down');
     }
   };
   window.addEventListener('message', (e) => {
@@ -243,28 +245,35 @@ const LIST_SCRIPT = `
   vscode.postMessage({ type: 'ready' });
 `;
 
-/** A webview document with a nonce CSP for its inline script. */
-function webviewDoc(css, body, script) {
+const CODICONS = () => vscode.Uri.joinPath(ctx.extensionUri, 'media', 'codicons');
+/** Webview options: scripts, and the vendored codicon font (media/codicons, from @vscode/codicons). */
+const webviewOptions = () => ({ enableScripts: true, localResourceRoots: [CODICONS()] });
+
+/** A webview document with a nonce CSP for its inline script and VS Code's icon font (codicons). */
+function webviewDoc(webview, css, body, script) {
   const nonce = crypto.randomBytes(16).toString('base64');
+  const icons = webview.asWebviewUri(vscode.Uri.joinPath(CODICONS(), 'codicon.css'));
   return `<!DOCTYPE html><html lang="${LANG}"><head><meta charset="utf-8">
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'nonce-${nonce}';">
-<style>${css}</style></head><body>${body}<script nonce="${nonce}">${script}</script></body></html>`;
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; font-src ${webview.cspSource}; style-src ${webview.cspSource} 'unsafe-inline'; script-src 'nonce-${nonce}';">
+<link rel="stylesheet" href="${icons}"><style>${css}</style></head><body>${body}<script nonce="${nonce}">${script}</script></body></html>`;
 }
+/** A codicon: 'folder', 'loading~spin' (a ~spin suffix spins it, as in ThemeIcon ids). */
+const codicon = (id) => `<i class="codicon codicon-${id.replace('~spin', ' codicon-modifier-spin')}"></i>`;
 
 /**
  * One row of a list: a node with the row and its children.
- * @param {object} o { key, depth, title, tooltip, icon, cls, lines: [text], lineCls, acts: [{ act, title, label }],
- *   x: { act, title } (a cross, last), kids: [html] }
+ * @param {object} o { key, depth, title, tooltip, icon (a codicon id), cls, lines: [text], lineCls,
+ *   acts: [{ act, title, icon }], x: { act, title, icon = 'close' } (last), kids: [html] }
  */
 function rowHtml(o) {
   const kids = o.kids || [];
   const lines = (o.lines || []).filter(Boolean).map((l, i) => `<div class="line${i === o.lines.filter(Boolean).length - 1 && o.lineCls ? ' ' + o.lineCls : ''}">${escapeHtml(l)}</div>`).join('');
   return `<div class="node" data-key="${escapeHtml(o.key)}"><div class="row ${o.cls || ''}" style="--depth:${o.depth || 0}">` +
-    `<span class="fold${kids.length ? '' : ' none'}" data-act="fold">▾</span>` +
-    `<div class="main"><div class="title" data-act="open" title="${escapeHtml(o.tooltip || '')}"><span class="ico">${o.icon || ''}</span>` +
+    `<span class="fold${kids.length ? '' : ' none'}" data-act="fold">${codicon('chevron-down')}</span>` +
+    `<div class="main"><div class="title" data-act="open" title="${escapeHtml(o.tooltip || '')}"><span class="ico">${o.icon ? codicon(o.icon) : ''}</span>` +
     `<span class="name">${escapeHtml(String(o.title).slice(0, 300))}</span></div>${lines}</div>` +
-    (o.acts || []).map((a) => `<button class="x" data-act="${a.act}" title="${escapeHtml(a.title)}">${a.label}</button>`).join('') +
-    (o.x ? `<button class="x" data-act="${o.x.act}" title="${escapeHtml(o.x.title)}">✕</button>` : '') +
+    [...(o.acts || []), o.x && { icon: 'close', ...o.x }].filter(Boolean)
+      .map((a) => `<button class="x" data-act="${a.act}" title="${escapeHtml(a.title)}">${codicon(a.icon)}</button>`).join('') +
     `</div><div class="kids">${kids.join('')}</div></div>`;
 }
 const emptyHtml = (text) => `<div class="empty">${escapeHtml(text)}</div>`;
@@ -280,8 +289,8 @@ class WebList {
   resolveWebviewView(view) {
     this.view = view;
     this.html = null;
-    view.webview.options = { enableScripts: true };
-    view.webview.html = webviewDoc(LIST_CSS, '<div id="list"></div>', LIST_SCRIPT);
+    view.webview.options = webviewOptions();
+    view.webview.html = webviewDoc(view.webview, LIST_CSS, '<div id="list"></div>', LIST_SCRIPT);
     view.webview.onDidReceiveMessage((m) => (m?.type === 'ready' ? this.refresh(true) : this.act(m?.type, m?.key)));
     view.onDidChangeVisibility(() => view.visible && this.refresh(true));
     view.onDidDispose(() => { this.view = null; });
@@ -323,15 +332,15 @@ class ProjectsView extends WebList {
       return rowHtml({
         key: p.dir || p.cwd, title: baseName(p.cwd),
         tooltip: p.exists ? p.cwd : t('Folder not found — click to point to where the project is now'),
-        icon: !p.exists ? '⚠' : current ? '●' : '○', cls: [current ? 'current accent' : '', p.exists ? '' : 'warn'].join(' '),
+        icon: !p.exists ? 'warning' : current ? 'folder-opened' : 'folder', cls: [current ? 'current' : '', p.exists ? '' : 'warn'].join(' '),
         lines: [
           (p.sessions ? t('{0} sess. · {1}', p.sessions, fmtDate(p.updated)) : t('no sessions')) + (p.exists ? '' : ' · ' + t('folder not found')),
           shortPath(p.cwd),
         ],
         lineCls: p.exists ? '' : 'state',
         acts: [
-          p.exists && !current ? { act: 'window', title: t('Open in New Window'), label: '⧉' } : null,
-          p.dir ? { act: 'relink', title: t('Move History to Another Folder…'), label: '⇢' } : null,
+          p.exists && !current ? { act: 'window', title: t('Open in New Window'), icon: 'empty-window' } : null,
+          p.dir ? { act: 'relink', title: t('Move History to Another Folder…'), icon: 'arrow-right' } : null,
         ].filter(Boolean),
       });
     }).join('');
@@ -361,9 +370,9 @@ class HistoryView extends WebList {
       const current = chat?.state.sessionId === s.id;
       return rowHtml({
         key: s.id, title: s.title || t('untitled'), tooltip: `${s.title || ''}\n${t('session {0}', s.id)}`,
-        icon: current ? '●' : '○', cls: current ? 'current accent' : '',
+        icon: current ? 'comment-discussion' : 'comment', cls: current ? 'current' : '',
         lines: [t('{0} · {1} msg.', fmtDate(s.updated), s.messages), s.lastPrompt && s.lastPrompt !== s.title ? s.lastPrompt.replace(/\s+/g, ' ') : ''],
-        x: { act: 'delete', title: t('Move Session to Trash') },
+        x: { act: 'delete', title: t('Move Session to Trash'), icon: 'trash' },
       });
     }).join('');
   }
@@ -427,8 +436,8 @@ class ProcessesView extends WebList {
       const orphan = isOrphan(p);
       return rowHtml({
         key: procKey(p), depth, title: procTitle(p), tooltip: p.command,
-        icon: p.exited ? '⊘' : orphan ? '⚠' : p.kind === 'claude' ? '✻' : '›',
-        cls: [p.kind === 'claude' ? 'accent' : '', orphan ? 'warn' : '', p.exited ? 'dim' : ''].join(' '),
+        icon: p.exited ? 'circle-slash' : orphan ? 'warning' : p.kind === 'claude' ? 'sparkle' : 'terminal',
+        cls: [orphan ? 'warn' : '', p.exited ? 'dim' : ''].join(' '),
         lines: [
           [`PID ${p.pid}`, p.exited ? t('finished {0}', fmtWhen(p.exited)) : fmtWhen(p.started),
             !p.exited && p.cpu != null ? `${p.cpu}%` : '', !p.exited && p.rss != null ? fmtKb(p.rss) : ''].filter(Boolean).join(' · '),
@@ -497,8 +506,8 @@ class AgentsView extends WebList {
         const u = a.usage || {};
         return rowHtml({
           key: 'a:' + a.id, depth, title: agentTitle(a), tooltip: a.prompt ? a.prompt.slice(0, 500) : '',
-          icon: !a.ended ? '◌' : a.status === 'completed' ? '✓' : a.status === 'failed' ? '✗' : '⊘',
-          cls: !a.ended ? 'accent' : a.status === 'failed' ? 'bad dim' : 'dim',
+          icon: !a.ended ? 'loading~spin' : a.status === 'completed' ? 'check' : a.status === 'failed' ? 'error' : 'circle-slash',
+          cls: a.ended ? 'dim' : '',
           lines: [
             [agentDur(a), a.model || '', u.total_tokens ? fmtTok(u.total_tokens) : '', u.tool_uses ? t('{0} actions', u.tool_uses) : '', AGENT_STATUS[a.status] || a.status].filter(Boolean).join(' · '),
             !a.ended ? (a.activity || a.lastTool || '') : '',
@@ -509,7 +518,7 @@ class AgentsView extends WebList {
       };
       const working = list.filter((a) => !a.ended).length;
       out.push(rowHtml({
-        key: 'r:' + rid, title: `“${info.prompt || t('run')}”`, tooltip: info.prompt || '', icon: '✻', cls: info.alive ? 'accent' : 'dim',
+        key: 'r:' + rid, title: `“${info.prompt || t('run')}”`, tooltip: info.prompt || '', icon: 'sparkle', cls: info.alive ? '' : 'dim',
         lines: [
           [info.alive ? (info.waiting ? t('waiting for a message') : t('working')) : t('finished'), working ? t('agents: {0}, working {1}', list.length, working) : t('agents: {0}', list.length)].join(' · '),
           [info.cwd && (filters.get('agentAllProjects') || info.cwd !== folder()) ? shortPath(info.cwd) : '', info.sessionId ? t('session {0}', info.sessionId.slice(0, 8)) : ''].filter(Boolean).join(' · '),
@@ -623,9 +632,9 @@ class Preview {
   }
   constructor() {
     this.subject = null;
-    this.panel = vscode.window.createWebviewPanel('claudeWrapper.preview', '', { viewColumn: vscode.ViewColumn.Active, preserveFocus: true }, { enableScripts: true });
+    this.panel = vscode.window.createWebviewPanel('claudeWrapper.preview', '', { viewColumn: vscode.ViewColumn.Active, preserveFocus: true }, webviewOptions());
     this.panel.iconPath = vscode.Uri.file(path.join(__dirname, 'resources', 'icon.png'));
-    this.panel.webview.html = webviewDoc(DETAIL_CSS, '<div id="root"></div>', DETAIL_SCRIPT);
+    this.panel.webview.html = webviewDoc(this.panel.webview, DETAIL_CSS, '<div id="root"></div>', DETAIL_SCRIPT);
     this.panel.webview.onDidReceiveMessage((m) => this.onMessage(m));
     this.timer = setInterval(() => this.panel.visible && this.subject?.live() && this.reload(), POLL_MS);
     this.panel.onDidDispose(() => { clearInterval(this.timer); preview = null; });

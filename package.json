@@ -2,7 +2,7 @@
   "name": "claude-wrapper",
   "displayName": "Claude Wrapper",
   "description": "%description%",
-  "version": "1.0.2",
+  "version": "1.0.3",
   "publisher": "ninebits",
   "icon": "resources/icon.png",
   "license": "UNLICENSED",
@@ -10,13 +10,20 @@
   "engines": {
     "vscode": "^1.100.0"
   },
-  "os": ["darwin"],
-  "categories": ["AI", "Chat"],
+  "os": [
+    "darwin"
+  ],
+  "categories": [
+    "AI",
+    "Chat"
+  ],
   "main": "./extension.js",
   "scripts": {
-    "pack": "vsce package --no-dependencies --allow-missing-repository --skip-license"
+    "pack": "vsce package --no-dependencies --allow-missing-repository --skip-license",
+    "codicons": "cp node_modules/@vscode/codicons/dist/codicon.css node_modules/@vscode/codicons/dist/codicon.ttf media/codicons/"
   },
   "devDependencies": {
+    "@vscode/codicons": "^0.0.46-24",
     "@vscode/vsce": "^4.0.0"
   },
   "l10n": "./l10n",
@@ -42,61 +49,247 @@
     },
     "views": {
       "claudeWrapper": [
-        { "type": "webview", "id": "claudeWrapper.projects", "name": "%view.projects%" },
-        { "type": "webview", "id": "claudeWrapper.history", "name": "%view.history%" },
-        { "type": "webview", "id": "claudeWrapper.processes", "name": "%view.processes%", "visibility": "collapsed" },
-        { "type": "webview", "id": "claudeWrapper.agents", "name": "%view.agents%", "visibility": "collapsed" }
+        {
+          "type": "webview",
+          "id": "claudeWrapper.projects",
+          "name": "%view.projects%"
+        },
+        {
+          "type": "webview",
+          "id": "claudeWrapper.history",
+          "name": "%view.history%"
+        },
+        {
+          "type": "webview",
+          "id": "claudeWrapper.processes",
+          "name": "%view.processes%",
+          "visibility": "collapsed"
+        },
+        {
+          "type": "webview",
+          "id": "claudeWrapper.agents",
+          "name": "%view.agents%",
+          "visibility": "collapsed"
+        }
       ],
       "claudeWrapperChat": [
-        { "type": "webview", "id": "claudeWrapper.chat", "name": "%view.chat%" }
+        {
+          "type": "webview",
+          "id": "claudeWrapper.chat",
+          "name": "%view.chat%"
+        }
       ]
     },
     "commands": [
-      { "command": "claudeWrapper.refresh", "title": "%cmd.refresh%", "icon": "$(refresh)", "category": "Claude Wrapper" },
-      { "command": "claudeWrapper.newChat", "title": "%cmd.newChat%", "icon": "$(add)", "category": "Claude Wrapper" },
-      { "command": "claudeWrapper.openProject", "title": "%cmd.openProject%", "category": "Claude Wrapper" },
-      { "command": "claudeWrapper.openProjectNewWindow", "title": "%cmd.openProjectNewWindow%", "icon": "$(empty-window)", "category": "Claude Wrapper" },
-      { "command": "claudeWrapper.relinkProject", "title": "%cmd.relinkProject%", "icon": "$(arrow-right)", "category": "Claude Wrapper" },
-      { "command": "claudeWrapper.openSession", "title": "%cmd.openSession%", "category": "Claude Wrapper" },
-      { "command": "claudeWrapper.deleteSession", "title": "%cmd.deleteSession%", "icon": "$(trash)", "category": "Claude Wrapper" },
-      { "command": "claudeWrapper.stopProcess", "title": "%cmd.stopProcess%", "icon": "$(debug-stop)", "category": "Claude Wrapper" },
-      { "command": "claudeWrapper.stopAgent", "title": "%cmd.stopAgent%", "icon": "$(debug-stop)", "category": "Claude Wrapper" },
-      { "command": "claudeWrapper.restartServer", "title": "%cmd.restartServer%", "category": "Claude Wrapper" },
-      { "command": "claudeWrapper.showServerLog", "title": "%cmd.showServerLog%", "category": "Claude Wrapper" },
-      { "command": "claudeWrapper.toggleProcFinished", "title": "%cmd.procFinished%", "icon": "$(history)", "category": "Claude Wrapper" },
-      { "command": "claudeWrapper.toggleProcFinished.on", "title": "%cmd.procFinished.on%", "icon": "$(pass-filled)", "category": "Claude Wrapper" },
-      { "command": "claudeWrapper.toggleProcAllProjects", "title": "%cmd.procAllProjects%", "icon": "$(folder)", "category": "Claude Wrapper" },
-      { "command": "claudeWrapper.toggleProcAllProjects.on", "title": "%cmd.procAllProjects.on%", "icon": "$(folder-library)", "category": "Claude Wrapper" },
-      { "command": "claudeWrapper.toggleAgentFinished", "title": "%cmd.agentFinished%", "icon": "$(history)", "category": "Claude Wrapper" },
-      { "command": "claudeWrapper.toggleAgentFinished.on", "title": "%cmd.agentFinished.on%", "icon": "$(pass-filled)", "category": "Claude Wrapper" },
-      { "command": "claudeWrapper.toggleAgentAllProjects", "title": "%cmd.agentAllProjects%", "icon": "$(folder)", "category": "Claude Wrapper" },
-      { "command": "claudeWrapper.toggleAgentAllProjects.on", "title": "%cmd.agentAllProjects.on%", "icon": "$(folder-library)", "category": "Claude Wrapper" }
+      {
+        "command": "claudeWrapper.refresh",
+        "title": "%cmd.refresh%",
+        "icon": "$(refresh)",
+        "category": "Claude Wrapper"
+      },
+      {
+        "command": "claudeWrapper.newChat",
+        "title": "%cmd.newChat%",
+        "icon": "$(add)",
+        "category": "Claude Wrapper"
+      },
+      {
+        "command": "claudeWrapper.openProject",
+        "title": "%cmd.openProject%",
+        "category": "Claude Wrapper"
+      },
+      {
+        "command": "claudeWrapper.openProjectNewWindow",
+        "title": "%cmd.openProjectNewWindow%",
+        "icon": "$(empty-window)",
+        "category": "Claude Wrapper"
+      },
+      {
+        "command": "claudeWrapper.relinkProject",
+        "title": "%cmd.relinkProject%",
+        "icon": "$(arrow-right)",
+        "category": "Claude Wrapper"
+      },
+      {
+        "command": "claudeWrapper.openSession",
+        "title": "%cmd.openSession%",
+        "category": "Claude Wrapper"
+      },
+      {
+        "command": "claudeWrapper.deleteSession",
+        "title": "%cmd.deleteSession%",
+        "icon": "$(trash)",
+        "category": "Claude Wrapper"
+      },
+      {
+        "command": "claudeWrapper.stopProcess",
+        "title": "%cmd.stopProcess%",
+        "icon": "$(debug-stop)",
+        "category": "Claude Wrapper"
+      },
+      {
+        "command": "claudeWrapper.stopAgent",
+        "title": "%cmd.stopAgent%",
+        "icon": "$(debug-stop)",
+        "category": "Claude Wrapper"
+      },
+      {
+        "command": "claudeWrapper.restartServer",
+        "title": "%cmd.restartServer%",
+        "category": "Claude Wrapper"
+      },
+      {
+        "command": "claudeWrapper.showServerLog",
+        "title": "%cmd.showServerLog%",
+        "category": "Claude Wrapper"
+      },
+      {
+        "command": "claudeWrapper.toggleProcFinished",
+        "title": "%cmd.procFinished%",
+        "icon": "$(history)",
+        "category": "Claude Wrapper"
+      },
+      {
+        "command": "claudeWrapper.toggleProcFinished.on",
+        "title": "%cmd.procFinished.on%",
+        "icon": "$(pass-filled)",
+        "category": "Claude Wrapper"
+      },
+      {
+        "command": "claudeWrapper.toggleProcAllProjects",
+        "title": "%cmd.procAllProjects%",
+        "icon": "$(folder)",
+        "category": "Claude Wrapper"
+      },
+      {
+        "command": "claudeWrapper.toggleProcAllProjects.on",
+        "title": "%cmd.procAllProjects.on%",
+        "icon": "$(folder-library)",
+        "category": "Claude Wrapper"
+      },
+      {
+        "command": "claudeWrapper.toggleAgentFinished",
+        "title": "%cmd.agentFinished%",
+        "icon": "$(history)",
+        "category": "Claude Wrapper"
+      },
+      {
+        "command": "claudeWrapper.toggleAgentFinished.on",
+        "title": "%cmd.agentFinished.on%",
+        "icon": "$(pass-filled)",
+        "category": "Claude Wrapper"
+      },
+      {
+        "command": "claudeWrapper.toggleAgentAllProjects",
+        "title": "%cmd.agentAllProjects%",
+        "icon": "$(folder)",
+        "category": "Claude Wrapper"
+      },
+      {
+        "command": "claudeWrapper.toggleAgentAllProjects.on",
+        "title": "%cmd.agentAllProjects.on%",
+        "icon": "$(folder-library)",
+        "category": "Claude Wrapper"
+      }
     ],
     "menus": {
       "view/title": [
-        { "command": "claudeWrapper.refresh", "when": "view =~ /^claudeWrapper\\.(projects|history|processes|agents)$/", "group": "navigation@9" },
-        { "command": "claudeWrapper.newChat", "when": "view == claudeWrapper.history || view == claudeWrapper.chat", "group": "navigation@1" },
-        { "command": "claudeWrapper.toggleProcFinished", "when": "view == claudeWrapper.processes && !claudeWrapper.procFinished", "group": "navigation@1" },
-        { "command": "claudeWrapper.toggleProcFinished.on", "when": "view == claudeWrapper.processes && claudeWrapper.procFinished", "group": "navigation@1" },
-        { "command": "claudeWrapper.toggleProcAllProjects", "when": "view == claudeWrapper.processes && !claudeWrapper.procAllProjects", "group": "navigation@2" },
-        { "command": "claudeWrapper.toggleProcAllProjects.on", "when": "view == claudeWrapper.processes && claudeWrapper.procAllProjects", "group": "navigation@2" },
-        { "command": "claudeWrapper.toggleAgentFinished", "when": "view == claudeWrapper.agents && !claudeWrapper.agentFinished", "group": "navigation@1" },
-        { "command": "claudeWrapper.toggleAgentFinished.on", "when": "view == claudeWrapper.agents && claudeWrapper.agentFinished", "group": "navigation@1" },
-        { "command": "claudeWrapper.toggleAgentAllProjects", "when": "view == claudeWrapper.agents && !claudeWrapper.agentAllProjects", "group": "navigation@2" },
-        { "command": "claudeWrapper.toggleAgentAllProjects.on", "when": "view == claudeWrapper.agents && claudeWrapper.agentAllProjects", "group": "navigation@2" }
+        {
+          "command": "claudeWrapper.refresh",
+          "when": "view =~ /^claudeWrapper\\.(projects|history|processes|agents)$/",
+          "group": "navigation@9"
+        },
+        {
+          "command": "claudeWrapper.newChat",
+          "when": "view == claudeWrapper.history || view == claudeWrapper.chat",
+          "group": "navigation@1"
+        },
+        {
+          "command": "claudeWrapper.toggleProcFinished",
+          "when": "view == claudeWrapper.processes && !claudeWrapper.procFinished",
+          "group": "navigation@1"
+        },
+        {
+          "command": "claudeWrapper.toggleProcFinished.on",
+          "when": "view == claudeWrapper.processes && claudeWrapper.procFinished",
+          "group": "navigation@1"
+        },
+        {
+          "command": "claudeWrapper.toggleProcAllProjects",
+          "when": "view == claudeWrapper.processes && !claudeWrapper.procAllProjects",
+          "group": "navigation@2"
+        },
+        {
+          "command": "claudeWrapper.toggleProcAllProjects.on",
+          "when": "view == claudeWrapper.processes && claudeWrapper.procAllProjects",
+          "group": "navigation@2"
+        },
+        {
+          "command": "claudeWrapper.toggleAgentFinished",
+          "when": "view == claudeWrapper.agents && !claudeWrapper.agentFinished",
+          "group": "navigation@1"
+        },
+        {
+          "command": "claudeWrapper.toggleAgentFinished.on",
+          "when": "view == claudeWrapper.agents && claudeWrapper.agentFinished",
+          "group": "navigation@1"
+        },
+        {
+          "command": "claudeWrapper.toggleAgentAllProjects",
+          "when": "view == claudeWrapper.agents && !claudeWrapper.agentAllProjects",
+          "group": "navigation@2"
+        },
+        {
+          "command": "claudeWrapper.toggleAgentAllProjects.on",
+          "when": "view == claudeWrapper.agents && claudeWrapper.agentAllProjects",
+          "group": "navigation@2"
+        }
       ],
       "commandPalette": [
-        { "command": "claudeWrapper.openProject", "when": "false" },
-        { "command": "claudeWrapper.openProjectNewWindow", "when": "false" },
-        { "command": "claudeWrapper.relinkProject", "when": "false" },
-        { "command": "claudeWrapper.openSession", "when": "false" },
-        { "command": "claudeWrapper.deleteSession", "when": "false" },
-        { "command": "claudeWrapper.stopProcess", "when": "false" },
-        { "command": "claudeWrapper.stopAgent", "when": "false" },
-        { "command": "claudeWrapper.toggleProcFinished.on", "when": "false" },
-        { "command": "claudeWrapper.toggleProcAllProjects.on", "when": "false" },
-        { "command": "claudeWrapper.toggleAgentFinished.on", "when": "false" },
-        { "command": "claudeWrapper.toggleAgentAllProjects.on", "when": "false" }
+        {
+          "command": "claudeWrapper.openProject",
+          "when": "false"
+        },
+        {
+          "command": "claudeWrapper.openProjectNewWindow",
+          "when": "false"
+        },
+        {
+          "command": "claudeWrapper.relinkProject",
+          "when": "false"
+        },
+        {
+          "command": "claudeWrapper.openSession",
+          "when": "false"
+        },
+        {
+          "command": "claudeWrapper.deleteSession",
+          "when": "false"
+        },
+        {
+          "command": "claudeWrapper.stopProcess",
+          "when": "false"
+        },
+        {
+          "command": "claudeWrapper.stopAgent",
+          "when": "false"
+        },
+        {
+          "command": "claudeWrapper.toggleProcFinished.on",
+          "when": "false"
+        },
+        {
+          "command": "claudeWrapper.toggleProcAllProjects.on",
+          "when": "false"
+        },
+        {
+          "command": "claudeWrapper.toggleAgentFinished.on",
+          "when": "false"
+        },
+        {
+          "command": "claudeWrapper.toggleAgentAllProjects.on",
+          "when": "false"
+        }
       ]
     },
     "configuration": {

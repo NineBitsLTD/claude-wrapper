@@ -25,6 +25,8 @@ Claude Wrapper — a VS Code extension (macOS only) around a copy of Claude-AI's
 - `resources/icon.png` — the extension icon, built by `swift scripts/make-icon.swift` from
   `resources/icon-space.svg` (the picture of babylon-editor's and tts-stt-md-aloud's icons, label CLAUDE).
 - `npm run pack` — the .vsix (`@vscode/vsce`, a dev dependency).
+- `media/codicons/` — VS Code's icon font for the webview views (copied from the dev dependency
+  `@vscode/codicons` by `npm run codicons`; CC-BY-4.0), so their icons and twisties match VS Code's trees.
 
 ## Server
 
