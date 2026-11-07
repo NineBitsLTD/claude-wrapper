@@ -130,9 +130,15 @@ const LIST_CSS = `
   body { padding: 0; overflow: hidden; }
   .layout { display: flex; flex-direction: column; height: 100%; }
   .sec { display: flex; flex-direction: column; min-height: 0; }
-  .sec.main { flex: 2 1 0; min-height: 66px; }
-  .sec.sub { flex: 0 0 auto; border-top: 1px solid var(--vscode-sideBarSectionHeader-border, var(--vscode-panel-border, transparent)); }
-  .sec.sub:not(.collapsed) { flex: 1 1 0; min-height: 88px; }
+  .sec.main { flex: 2 1 0; min-height: 44px; }
+  .sec.sub { flex: 0 0 auto; position: relative; border-top: 1px solid var(--vscode-sideBarSectionHeader-border, var(--vscode-panel-border, transparent)); }
+  /* The sash above an open section, as VS Code's between views: drag to share the height. */
+  .sash { position: absolute; left: 0; right: 0; top: -3px; height: 5px; z-index: 2; cursor: ns-resize; }
+  .sash::after { content: ''; position: absolute; left: 0; right: 0; top: 1px; height: 3px; background: transparent; transition: background .1s .3s; }
+  .sash:hover::after, .sash.active::after { background: var(--vscode-sash-hoverBorder, var(--vscode-focusBorder)); }
+  .sec.collapsed > .sash { display: none; }
+  body.resizing { cursor: ns-resize; user-select: none; }
+  .sec.sub:not(.collapsed) { flex: 1 1 0; min-height: 66px; }
   .body { flex: 1; min-height: 0; overflow: auto; padding: 2px 0; }
   .sec.collapsed .body { display: none; }
   header { display: flex; align-items: center; height: 22px; padding-right: 6px; cursor: pointer; user-select: none; flex: none;
@@ -151,8 +157,68 @@ const LIST_CSS = `
 const LIST_SCRIPT = `
   const vscode = acquireVsCodeApi();
   const state = vscode.getState() || { folded: [] };
+  // Heights of the open parts (px, by section) as last set with a sash; rescaled to the view.
+  const sizes = state.sizes || {};
   const folded = new Set(state.folded);
-  const save = () => vscode.setState({ folded: [...folded] });
+  const save = () => vscode.setState({ folded: [...folded], sizes });
+  const MIN = { main: 44, sub: 66 };
+  const openParts = () => [...document.querySelectorAll('.sec')].filter((p) => !p.classList.contains('collapsed'));
+  /**
+   * The open parts share the view's height: by the saved sizes (missing ones by weight, the
+   * projects twice a section), scaled to what the collapsed sections leave.
+   */
+  const layout = () => {
+    const box = document.querySelector('.layout');
+    if (!box) return;
+    const all = [...document.querySelectorAll('.sec')];
+    for (const p of all) if (p.classList.contains('collapsed')) p.style.flex = '0 0 auto';
+    const open = openParts();
+    const rest = all.filter((p) => !open.includes(p)).reduce((sum, p) => sum + p.offsetHeight, 0);
+    const avail = Math.max(0, box.clientHeight - rest);
+    const weight = (p) => (p.classList.contains('main') ? 2 : 1);
+    const unit = avail / open.reduce((sum, p) => sum + weight(p), 0);
+    const want = open.map((p) => sizes[p.dataset.sec] || weight(p) * unit);
+    const scale = avail / (want.reduce((a, b) => a + b, 0) || 1);
+    open.forEach((p, i) => { p.style.flex = '0 0 ' + Math.max(p.classList.contains('main') ? MIN.main : MIN.sub, want[i] * scale) + 'px'; });
+  };
+  new ResizeObserver(layout).observe(document.body);
+  document.addEventListener('pointerdown', (e) => {
+    const sash = e.target.closest('.sash');
+    if (!sash) return;
+    e.preventDefault();
+    const below = sash.closest('.sec');
+    const open = openParts();
+    const above = open[open.indexOf(below) - 1];
+    if (!above) return;
+    for (const p of open) sizes[p.dataset.sec] = p.offsetHeight;
+    const y0 = e.clientY, hA = above.offsetHeight, hB = below.offsetHeight;
+    const minA = above.classList.contains('main') ? MIN.main : MIN.sub;
+    sash.classList.add('active');
+    document.body.classList.add('resizing');
+    try { sash.setPointerCapture(e.pointerId); } catch {}
+    const move = (ev) => {
+      const d = Math.max(minA - hA, Math.min(hB - MIN.sub, ev.clientY - y0));
+      sizes[above.dataset.sec] = hA + d;
+      sizes[below.dataset.sec] = hB - d;
+      layout();
+    };
+    const up = () => {
+      sash.classList.remove('active');
+      document.body.classList.remove('resizing');
+      sash.removeEventListener('pointermove', move);
+      sash.removeEventListener('pointerup', up);
+      save();
+    };
+    sash.addEventListener('pointermove', move);
+    sash.addEventListener('pointerup', up);
+  });
+  // Double-click on a sash: back to the default shares.
+  document.addEventListener('dblclick', (e) => {
+    if (!e.target.closest('.sash')) return;
+    for (const k of Object.keys(sizes)) delete sizes[k];
+    save();
+    layout();
+  });
   const keyOf = (node) => node.closest('.sec').dataset.sec + ':' + node.dataset.key;
   const applyFolds = (root) => {
     for (const n of root.querySelectorAll('.node')) {
@@ -168,6 +234,7 @@ const LIST_SCRIPT = `
     if (!el || !el.classList.contains('sub')) return;
     el.classList.toggle('collapsed', c);
     el.querySelector('header .chev').firstChild.className = 'codicon codicon-chevron-' + (c ? 'right' : 'down');
+    layout();
     if (tell) vscode.postMessage({ type: 'collapse', section: name, collapsed: c });
   };
   window.addEventListener('message', (e) => {
@@ -325,7 +392,7 @@ class Sidebar {
 /** The side bar's skeleton: the projects' body, then the sections with their header buttons. */
 function sidebarBody() {
   const tool = (act, icon, title) => `<button data-hact="${act}" title="${escapeHtml(title)}">${codicon(icon)}</button>`;
-  const section = (name, label, tools) => `<section class="sec sub" data-sec="${name}"><header title="${escapeHtml(label)}">` +
+  const section = (name, label, tools) => `<section class="sec sub" data-sec="${name}"><div class="sash" title="${escapeHtml(t('Drag to change the height; double-click — even shares'))}"></div><header title="${escapeHtml(label)}">` +
     `<span class="chev">${codicon('chevron-down')}</span><span class="label">${escapeHtml(label)}</span><span class="tools">${tools}</span></header>` +
     `<div class="body"></div></section>`;
   return '<div class="layout"><div class="sec main" data-sec="projects"><div class="body"></div></div>' +
