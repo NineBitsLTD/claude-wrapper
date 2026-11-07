@@ -8,7 +8,8 @@ VS Code's display language is Russian.
   Code; a project whose folder is gone asks for the new one and moves its history), and under them
   History (the sessions of this window's folder; a click opens one in the chat), Processes (every
   Claude Code process on the machine and what it started, including processes left behind by
-  finished sessions) and Subagents.
+  finished sessions), Subagents and MCP Servers (those of the chat's Claude process: sign in,
+  reconnect, enable, disable while it runs; otherwise the last list seen, with a check).
 - **Right** — the chat in the secondary side bar, next to other chats.
 
 No server process and no port: the wrapper's code runs inside the extension.

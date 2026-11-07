@@ -8,11 +8,13 @@ Claude Wrapper — a VS Code extension (macOS only) around a copy of Claude-AI's
 - `extension.js` — the whole extension (plain JS, no build, no npm dependencies): runs the wrapper's
   code in its own process (no server, no port); the activity bar container `claudeWrapper`, titled
   Projects, with one webview view — the projects as its main list, then collapsible sections History,
-  Processes and Subagents (one view, so VS Code draws no sashes between them: the view has its own —
+  Processes, Subagents and MCP Servers (one view, so VS Code draws no sashes between them: the view has its own —
   drag a section's top border, double-click for the default shares, heights remembered; rows of two
   or three lines; header toggles for finished entries and all
-  projects; a click on a process or a subagent opens its details in an editor preview); the chat
-  webview `claudeWrapper.chat` in the secondary side bar. While Claude works, the chat's Stop and a
+  projects; a click on a process, a subagent or an MCP server opens its details in an editor preview;
+  MCP servers come from the chat's running Claude process and are managed there, otherwise the last
+  list seen is shown and can be checked); the chat webview `claudeWrapper.chat` in the secondary side
+  bar (in VS Code its gear menu has no MCP part — that is the side bar's). While Claude works, the chat's Stop and a
   project switch ask first: stop now, ask Claude to finish (a wrap-up message), or cancel.
 - `server/` — the wrapper's code (Node built-ins only), a copy of Claude-AI's server: routes for the
   chat page and the side bar (`server.js`), called in-process through `server/inproc.js`. Run on its

@@ -13,15 +13,18 @@
  *   buttons: a new window, move the history); under it the collapsible sections History (sessions of
  *   this window's folder; a click opens one in the chat, the trash moves it to the Trash), Processes
  *   and Subagents (a click opens the details in an editor preview, Preview; the cross stops it; header
- *   toggles for finished entries and all projects, `filters`). Rows have two or three lines; the
- *   open sections are polled every few seconds while the view is visible.
+ *   toggles for finished entries and all projects, `filters`) and MCP Servers (McpView: those of the
+ *   chat's running Claude process, managed there — sign in, reconnect, enable, disable; otherwise the
+ *   last list seen, and a check). Rows have two or three lines; the open sections are polled every
+ *   few seconds while the view is visible.
  * - Secondary side bar: the chat, server/public/index.html right in a webview (chatHtml): window.CW
  *   gives it { embed: 'vscode', cwd, lang }, public/vscode-shim.js its channel to this side and its
  *   fetch('/api/...') bridge (messages 'http' / 'httpAbort' / 'httpReset', answers streamed back).
  *   Other messages: page -> extension { source: 'claude-wrapper', type: 'ready' | 'state' |
- *   'openFile' | 'showView' }, extension -> page { target: 'claude-wrapper', type: 'setProject' |
- *   'loadSession' | 'newChat' | 'stop' | 'finish' }; the page's state carries `busy`, and opening
- *   another folder while Claude works asks first (whenChatMayLeave).
+ *   'mcp' | 'openFile' | 'showView' }, extension -> page { target: 'claude-wrapper', type: 'setProject' |
+ *   'loadSession' | 'newChat' | 'stop' | 'finish' }; the page's state carries `busy` (opening
+ *   another folder while Claude works asks first, whenChatMayLeave) and `runId` (its live Claude
+ *   process, whose MCP servers the side bar manages); 'mcp' is the servers a process reported at start.
  * - Language: English by default, Russian when VS Code's display language is Russian. The manifest
  *   strings come from package.nls*.json, this file's from l10n/bundle.l10n.*.json (vscode.l10n.t),
  *   and the page gets window.CW.lang (its own dictionary: public/i18n.js).
@@ -125,6 +128,11 @@ const LIST_CSS = `
     border-radius: 5px; display: flex; align-items: center; justify-content: center; }
   .x:hover { background: var(--vscode-toolbar-hoverBackground); }
   .node.folded > .kids { display: none; }
+  .note { display: flex; align-items: center; gap: 4px; padding: 2px 20px 4px; color: var(--vscode-descriptionForeground); font-size: .92em; }
+  /* MCP servers: the status in the icon's colour, as the chat's gear menu had it. */
+  .mcp-connected .ico .codicon { color: var(--vscode-testing-iconPassed, #73c991); }
+  .mcp-failed .ico .codicon, .mcp-failed .state { color: var(--vscode-errorForeground, #f14c4c); }
+  .mcp-needs-auth .ico .codicon { color: var(--vscode-editorWarning-foreground, #cca700); }
   /* Sections: the projects fill the top, each open section shares the rest; a body scrolls. */
   html, body { height: 100%; }
   body { padding: 0; overflow: hidden; }
@@ -303,13 +311,17 @@ function rowHtml(o) {
 }
 const emptyHtml = (text) => `<div class="empty">${escapeHtml(text)}</div>`;
 
-/** A part of the side bar: load() -> data, render(data) -> HTML, act(type, key) for clicks in it. */
+/**
+ * A part of the side bar: load() -> data, render(data) -> HTML, act(type, key) for clicks in it;
+ * optionally header(act) -> true for its own header buttons, polls() -> false to skip the polling.
+ */
 class Section {
   constructor(name) {
     this.name = name;
     this.data = null;
   }
   refresh(force = false) { return sidebar?.refreshSection(this, force); }
+  polls() { return true; }
 }
 
 /**
@@ -320,9 +332,9 @@ class Sidebar {
   constructor(sections) {
     this.id = 'claudeWrapper.projects';
     this.view = null;
-    this.sections = sections; // { projects, history, processes, agents }
+    this.sections = sections; // { projects, history, processes, agents, mcp }
     this.html = {};
-    this.collapsed = new Set(ctx.globalState.get('sidebar.collapsed', ['processes', 'agents']));
+    this.collapsed = new Set(ctx.globalState.get('sidebar.collapsed', ['processes', 'agents', 'mcp']));
   }
   resolveWebviewView(view) {
     this.view = view;
@@ -337,13 +349,14 @@ class Sidebar {
   /** The section states (collapsed, the header toggles) to the view. */
   postState() {
     const collapsed = {};
-    for (const name of ['history', 'processes', 'agents']) collapsed[name] = this.collapsed.has(name);
+    for (const name of ['history', 'processes', 'agents', 'mcp']) collapsed[name] = this.collapsed.has(name);
     const toggles = {};
     for (const n of filters.names) toggles[n] = filters.get(n);
     this.view?.webview.postMessage({ type: 'sections', collapsed, toggles });
   }
+  /** The open sections; the polling (force = false) skips those that don't poll now. */
   async refresh(force = false) {
-    for (const sec of Object.values(this.sections)) if (!this.collapsed.has(sec.name)) await this.refreshSection(sec, force);
+    for (const sec of Object.values(this.sections)) if (!this.collapsed.has(sec.name) && (force || sec.polls())) await this.refreshSection(sec, force);
   }
   async refreshSection(sec, force = false) {
     if (!this.view || this.collapsed.has(sec.name)) return;
@@ -375,6 +388,7 @@ class Sidebar {
     const sec = this.sections[m?.section];
     if (!sec) return;
     if (m.type === 'header') {
+      if (sec.header?.(m.act)) return;
       if (m.act === 'newChat') return vscode.commands.executeCommand('claudeWrapper.newChat');
       if (m.act === 'refresh') return this.refreshSection(sec, true);
       const name = /^toggle:(\w+)$/.exec(m.act)?.[1];
@@ -401,6 +415,7 @@ function sidebarBody() {
       tool('toggle:procAllProjects', 'folder-library', t('Show Processes of All Projects')) + tool('refresh', 'refresh', t('Refresh'))) +
     section('agents', t('Subagents'), tool('toggle:agentFinished', 'history', t('Show Subagents Finished in the Last Hour')) +
       tool('toggle:agentAllProjects', 'folder-library', t('Show Subagents of All Projects')) + tool('refresh', 'refresh', t('Refresh'))) +
+    section('mcp', t('MCP Servers'), tool('check', 'refresh', t('Check the MCP Servers'))) +
     '</div>';
 }
 
@@ -643,6 +658,143 @@ async function stopAgent(a) {
   }
 }
 
+// --- MCP servers: those of the chat's Claude process while it runs, otherwise as last seen ---
+
+const MCP_STATUS = { connected: t('connected'), pending: t('connecting'), 'needs-auth': t('needs sign-in'), failed: t('failed'), disabled: t('disabled') };
+const MCP_ICON = { connected: 'pass', pending: 'loading~spin', 'needs-auth': 'key', failed: 'error', disabled: 'circle-slash' };
+const MCP_SCOPE = { user: t('user'), project: t('project'), local: t('local'), plugin: t('plugin'), managed: t('managed'), enterprise: t('managed'), dynamic: t('dynamic'), claudeai: 'claude.ai', sdk: 'SDK' };
+/** Where a server comes from: a plugin, or the settings it is configured in. */
+const mcpScope = (s) => { const k = s.source || s.scope; return k ? MCP_SCOPE[k] || k : ''; };
+/** What a server runs: its command line, or its address. */
+function mcpWhere(s) {
+  const c = s.config || {};
+  if (c.url) return c.url;
+  if (c.command) return [c.command, ...(c.args || [])].map(shortPath).join(' ');
+  return s.urlHost || s.transport || '';
+}
+/** What can be done with a server in the chat's running process. */
+const mcpActs = (s) => [
+  s.status === 'needs-auth' ? { act: 'auth', label: t('Sign In'), title: t('Sign in to this MCP server (a browser opens)'), icon: 'key' } : null,
+  s.status !== 'disabled' ? { act: 'reconnect', label: t('Reconnect'), title: t('Reconnect'), icon: 'debug-restart' } : null,
+  s.status === 'disabled'
+    ? { act: 'enable', label: t('Enable'), title: t('Enable the server'), icon: 'play' }
+    : { act: 'disable', label: t('Disable'), title: t('Disable the server (Claude loses its tools)'), icon: 'circle-slash' },
+].filter(Boolean);
+const MCP_LIVE_ONLY = t('Servers can be enabled, disabled and reconnected while Claude runs in the chat');
+
+/**
+ * The MCP servers of the chat's project. While the chat's Claude process runs (it also waits
+ * between messages) they come from it (mcp_status) and can be managed; otherwise the list is the
+ * last one seen (the process's start, a check), kept per workspace, and the header's button checks
+ * with a short process of its own. Polled only while a server of the running process is connecting.
+ */
+class McpView extends Section {
+  constructor() {
+    super('mcp');
+    this.last = ctx.workspaceState.get('mcp.last', null); // { cwd, at, how: 'run' | 'check', servers }
+    this.checking = false;
+    this.asked = { runId: null, at: 0 };
+  }
+  cwd() { return chat?.state.cwd || folder(); }
+  runId() { return chat?.state.runId || null; }
+  servers() { return this.last && this.last.cwd === this.cwd() ? this.last.servers : null; }
+  polls() { return !!this.runId() && !!this.servers()?.some((s) => s.status === 'pending'); }
+  remember(servers, how) {
+    if (!Array.isArray(servers)) return;
+    this.last = { cwd: this.cwd(), at: Date.now(), how, servers };
+    ctx.workspaceState.update('mcp.last', this.last);
+  }
+  /** Asks the chat's running process (at most once a second); false when none runs. */
+  async ask() {
+    const runId = this.runId();
+    if (!runId) return false;
+    if (this.asked.runId === runId && Date.now() - this.asked.at < 1000) return true;
+    this.asked = { runId, at: Date.now() };
+    try {
+      const d = await postJson('/api/chat/control', { runId, request: { subtype: 'mcp_status' } });
+      this.remember(d.mcpServers, 'run');
+      return true;
+    } catch {
+      return false; // the process has just ended: the last list stays
+    }
+  }
+  async load() {
+    await this.ask();
+    return this.servers();
+  }
+  /** The header's button: the running process's answer, or a short process for the check (seconds). */
+  async check() {
+    if (this.checking) return;
+    if (!(await this.ask())) {
+      this.checking = true;
+      this.refresh(true);
+      try {
+        const d = await postJson('/api/session/control', { cwd: this.cwd(), request: { subtype: 'mcp_status' } });
+        this.remember(d.mcpServers, 'check');
+      } catch (e) {
+        vscode.window.showErrorMessage(t('Could not check the MCP servers: {0}', e.message));
+      } finally {
+        this.checking = false;
+      }
+    }
+    await this.refresh(true);
+    preview?.sync(this);
+  }
+  header(act) {
+    if (act !== 'check') return false;
+    this.check();
+    return true;
+  }
+  render(servers) {
+    const live = !!this.runId();
+    let h = this.checking ? `<div class="note">${codicon('loading~spin')}${escapeHtml(t('Checking…'))}</div>` : '';
+    if (!servers) return h + (this.checking ? '' : emptyHtml(t('No data yet: Claude reports its MCP servers when it starts in the chat — or check now')));
+    if (!servers.length) return h + emptyHtml(t('No MCP servers are configured for this project'));
+    if (!live && !this.checking) h += `<div class="note" title="${escapeHtml(MCP_LIVE_ONLY)}">${escapeHtml(t('As of {0}', fmtDate(this.last.at)))}</div>`;
+    return h + servers.map((s) => {
+      const tools = s.tools?.length ?? s.toolCount;
+      return rowHtml({
+        key: 'm:' + s.name, title: s.name, tooltip: s.error || mcpWhere(s) || s.name,
+        icon: MCP_ICON[s.status] || 'circle-large-outline', cls: 'mcp-' + s.status + (s.status === 'disabled' ? ' dim' : ''),
+        lines: [
+          [MCP_STATUS[s.status] || s.status, s.status === 'connected' && tools != null ? t('tools: {0}', tools) : '', mcpScope(s)].filter(Boolean).join(' · '),
+          s.error || mcpWhere(s),
+        ],
+        lineCls: s.error ? 'state' : '',
+        acts: live ? mcpActs(s) : [],
+      });
+    }).join('');
+  }
+  act(type, key) {
+    const s = this.servers()?.find((x) => 'm:' + x.name === key);
+    if (!s) return;
+    if (type === 'open') Preview.show(new McpSubject(s));
+    else mcpAction(s, type);
+  }
+}
+
+/** Sign in, reconnect, enable or disable a server of the chat's running process. */
+async function mcpAction(s, type) {
+  const request = { auth: { subtype: 'mcp_authenticate' }, reconnect: { subtype: 'mcp_reconnect' }, enable: { subtype: 'mcp_toggle', enabled: true }, disable: { subtype: 'mcp_toggle', enabled: false } }[type];
+  if (!request) return;
+  const runId = mcpView.runId();
+  if (!runId) return vscode.window.showInformationMessage(MCP_LIVE_ONLY);
+  // A reconnect waits for the connection: the view's progress bar meanwhile.
+  await vscode.window.withProgress({ location: { viewId: sidebar.id } }, async () => {
+    try {
+      const r = await postJson('/api/chat/control', { runId, request: { ...request, serverName: s.name } });
+      // OAuth: the CLI gives the sign-in address; the browser comes back to the CLI itself.
+      if (r?.authUrl) vscode.env.openExternal(vscode.Uri.parse(r.authUrl));
+    } catch (e) {
+      vscode.window.showErrorMessage(t('MCP server “{0}”: {1}', s.name, e.message));
+    }
+    mcpView.asked.at = 0;
+    await mcpView.ask();
+  });
+  await mcpView.refresh(true);
+  preview?.sync(mcpView);
+}
+
 async function openSessionInChat(id, title) {
   await chat.reveal();
   chat.post({ type: 'loadSession', id, title });
@@ -866,6 +1018,59 @@ class AgentSubject {
   }
 }
 
+/** The first sentence of a tool's description, for the list (the whole one is its tooltip). */
+const firstSentence = (text) => {
+  const line = String(text).trim().split(/\n/)[0];
+  const m = /^(.{20,}?[.!?])\s/.exec(line + ' ');
+  return (m ? m[1] : line).slice(0, 200);
+};
+
+class McpSubject {
+  constructor(s) { this.s = s; this.key = 'm:' + s.name; }
+  title() { return `MCP · ${this.s.name}`; }
+  live() { return false; }
+  /** Cheap: asks the running process only; a check without one is the "Check" button. */
+  async refresh() {
+    await mcpView.ask();
+    this.take();
+  }
+  take() {
+    const fresh = mcpView.servers()?.find((x) => x.name === this.s.name);
+    if (!fresh || JSON.stringify(fresh) === JSON.stringify(this.s)) return false;
+    this.s = fresh;
+    return true;
+  }
+  sync(view) { return view === mcpView && this.take(); }
+  html() {
+    const s = this.s, c = s.config || {};
+    const live = !!mcpView.runId();
+    let h = `<h2>${esc(s.name)}</h2><div class="sub${s.status === 'failed' ? ' warn' : ''}">${esc(['MCP', MCP_STATUS[s.status] || s.status, mcpScope(s)].filter(Boolean).join(' · '))}</div>`;
+    h += '<div class="bar">' + (live ? mcpActs(s).map((a) => button(a.act, a.label)).join('') + button('refresh', t('Refresh')) : button('check', t('Check the MCP Servers'))) + '</div>';
+    if (!live && mcpView.last) h += `<p class="note">${esc(t('As of {0}', new Date(mcpView.last.at).toLocaleString(LOCALE)))}. ${esc(MCP_LIVE_ONLY)}.</p>`;
+    h += table([
+      [t('State'), MCP_STATUS[s.status] || s.status],
+      s.serverInfo ? [t('Server'), `${s.serverInfo.name} ${s.serverInfo.version}`] : null,
+      c.type || s.transport ? [t('Type'), c.type || s.transport] : null,
+      c.url ? ['URL', c.url] : null,
+      mcpScope(s) ? [t('Configured in'), mcpScope(s)] : null,
+    ]);
+    if (c.command) h += `<h3>${esc(t('Command'))}</h3><pre>${esc([c.command, ...(c.args || [])].join(' '))}</pre>`;
+    if (s.error) h += `<h3 class="warn">${esc(t('Error'))}</h3><pre>${esc(s.error)}</pre>`;
+    if (s.tools?.length) {
+      const mark = (x) => [x.annotations?.readOnly ? t('read-only') : '', x.annotations?.destructive ? t('destructive') : ''].filter(Boolean).join(', ');
+      h += `<h3>${esc(t('Tools ({0})', s.tools.length))}</h3><ul>` + s.tools.map((x) =>
+        `<li title="${esc(x.description || '')}"><b>${esc(x.name)}</b>${mark(x) ? ` <span class="note">(${esc(mark(x))})</span>` : ''}${x.description ? ' — ' + esc(firstSentence(x.description)) : ''}</li>`).join('') + '</ul>';
+    } else if (s.toolCount) {
+      h += table([[t('Tools'), String(s.toolCount)]]);
+    }
+    return h;
+  }
+  act(type) {
+    if (type === 'check') mcpView.check();
+    else mcpAction(this.s, type);
+  }
+}
+
 // ---------------------------------------------------------------------------------------------
 // Chat: the page (server/public/index.html) right in a webview view (secondary side bar). Its
 // fetch('/api/...') comes here as messages (public/vscode-shim.js) and goes to the server's routes.
@@ -878,8 +1083,9 @@ class ChatView {
     this.ready = false;
     this.queue = [];
     this.requests = new Map(); // the page's open fetches: id -> { abort }
-    this.state = { cwd: null, sessionId: null, title: '' };
+    this.state = { cwd: null, sessionId: null, title: '', runId: null };
     this.onState = () => {};
+    this.onMcp = () => {};
   }
   resolveWebviewView(view) {
     this.view = view;
@@ -935,8 +1141,10 @@ class ChatView {
       this.ready = true;
       for (const q of this.queue.splice(0)) this.post(q);
     } else if (m.type === 'state') {
-      this.state = { cwd: m.cwd, sessionId: m.sessionId, title: m.title, busy: !!m.busy };
+      this.state = { cwd: m.cwd, sessionId: m.sessionId, title: m.title, busy: !!m.busy, runId: m.runId || null };
       this.onState();
+    } else if (m.type === 'mcp' && Array.isArray(m.servers)) {
+      this.onMcp(m.servers);
     } else if (m.type === 'showView' && ['processes', 'agents', 'history'].includes(m.view)) {
       // From the counts under the chat's input: the side bar shown, that section opened.
       vscode.commands.executeCommand('claudeWrapper.projects.focus').then(() => sidebar.expand(m.view));
@@ -1034,7 +1242,7 @@ async function relinkProject(p) {
 }
 
 let sidebar = null;
-let historyView = null, processesView = null, agentsView = null;
+let historyView = null, processesView = null, agentsView = null, mcpView = null;
 
 /**
  * Toggles of the Processes and Subagents sections (buttons in their headers), kept per workspace:
@@ -1060,9 +1268,17 @@ function activate(context) {
   historyView = new HistoryView();
   processesView = new ProcessesView();
   agentsView = new AgentsView();
-  sidebar = new Sidebar({ projects: new ProjectsView(), history: historyView, processes: processesView, agents: agentsView });
+  mcpView = new McpView();
+  sidebar = new Sidebar({ projects: new ProjectsView(), history: historyView, processes: processesView, agents: agentsView, mcp: mcpView });
   context.subscriptions.push(vscode.window.registerWebviewViewProvider(sidebar.id, sidebar));
-  chat.onState = () => historyView.refresh(true); // the open session gets its mark
+  let chatRun = null;
+  chat.onState = () => {
+    historyView.refresh(true); // the open session gets its mark
+    // The chat's Claude process started or ended: its MCP servers, managed or not.
+    if (chat.state.runId !== chatRun) { chatRun = chat.state.runId; mcpView.refresh(true); }
+  };
+  // A process's start reports its servers (names and states); the process itself then tells the rest.
+  chat.onMcp = (servers) => { mcpView.remember(servers, 'run'); mcpView.asked.at = 0; mcpView.refresh(true); };
   const timer = setInterval(() => sidebar.visible && sidebar.refresh(), POLL_MS);
   context.subscriptions.push({ dispose: () => clearInterval(timer) });
 

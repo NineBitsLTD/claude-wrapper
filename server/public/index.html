@@ -1037,6 +1037,8 @@
   let runWaiting = false;
   let runEnded = Promise.resolve();
   const busy = () => !!controller && !runWaiting;
+  /** The chat's Claude process while it lives (it also waits between messages), or null. */
+  const liveRun = () => (controller && runId) || null;
   let currentState = null; // state of the running send() (interrupt flag, first bubble…)
   let sessionTitle = '';     // title of the current session (generated or renamed)
   let pendingFork = null;    // { sessionId, uuid }: the next message continues from before that message
@@ -1328,7 +1330,7 @@
     $('projectsTitle').title = cwd;
     metaEl.textContent = `${shortPath(cwd)} · ${sessionId ? (sessionTitle || tl('session {0}', sessionId.slice(0, 8))) : tl('new session')}`;
     metaEl.title = sessionId || '';
-    toHost({ type: 'state', cwd, sessionId, title: sessionTitle || '', busy: busy() });
+    toHost({ type: 'state', cwd, sessionId, title: sessionTitle || '', busy: busy(), runId: liveRun() });
     $('chatTitle').textContent = sessionId ? (sessionTitle || tl('Session {0}', sessionId.slice(0, 8))) : tl('New chat');
     $('chatTitle').title = sessionId ? `${sessionTitle || tl('Session')} · ${sessionId}` : '';
   }
@@ -4831,7 +4833,7 @@
               el('div', 'error', tl('The CLI started in the “{0}” mode, but “{1}” is selected.', modeInfo(ev.permissionMode).label, modeInfo(state.requestedMode).label));
             }
           }
-          if (Array.isArray(ev.mcp_servers)) settings.setMcp(ev.mcp_servers);
+          if (Array.isArray(ev.mcp_servers)) { settings.setMcp(ev.mcp_servers); toHost({ type: 'mcp', servers: ev.mcp_servers }); }
           if (Array.isArray(ev.slash_commands)) {
             setCliCommands(ev.slash_commands);
           }
@@ -5503,6 +5505,8 @@
       tool(tl('Current plan…'), tl('The plan from this session’s plan mode'), showPlan);
       tool(tl('Export the conversation…'), tl('The whole conversation as text, like /export'), exportConversation);
       tool(tl('Reload skills and plugins'), tl('New and changed skills, plugins and styles — without restarting the process'), () => reloadExtensions());
+      // MCP servers: in VS Code a section of the extension's side bar instead.
+      if (EMBED) return;
       menu.appendChild(Object.assign(document.createElement('div'), { className: 'menu-section', textContent: tl('MCP servers') }));
       const ICON = { connected: '🟢', pending: '🟡', 'needs-auth': '🔑', failed: '🔴', disabled: '⚪' };
       if (!mcp.length) menu.appendChild(Object.assign(document.createElement('div'), { className: 'menu-note', textContent: tl('The list appears after the first message or with the button below') }));
@@ -10228,9 +10232,11 @@
       else if (m.type === 'stop') stopRun();
       else if (m.type === 'finish' && busy()) askToFinish();
     });
-    // The extension asks before switching the folder while Claude works: it follows `busy`.
-    let wasBusy = busy();
-    setInterval(() => { if (busy() !== wasBusy) { wasBusy = busy(); renderMeta(); } }, 500);
+    // The extension asks before switching the folder while Claude works (it follows `busy`) and
+    // manages the MCP servers of the chat's live process (`runId`).
+    const hostKey = () => `${busy()}|${liveRun()}`;
+    let was = hostKey();
+    setInterval(() => { if (hostKey() !== was) { was = hostKey(); renderMeta(); } }, 500);
     toHost({ type: 'ready' });
   }
 </script>
