@@ -29,7 +29,7 @@
  *   page's state carries `busy` (opening another folder while Claude works asks first,
  *   whenChatMayLeave) and `runId` (its live Claude process, whose MCP servers the side bar
  *   manages); 'mcp' is the servers a process reported at start.
- * - Language: English by default, Russian when VS Code's display language is Russian. The manifest
+ * - Language: English by default, Russian or Ukrainian when that is VS Code's display language. The manifest
  *   strings come from package.nls*.json, this file's from l10n/bundle.l10n.*.json (vscode.l10n.t),
  *   and the page gets window.CW.lang (its own dictionary: public/i18n.js).
  */
@@ -46,9 +46,9 @@ const POLL_MS = 3000;
 const PUBLIC_DIR = path.join(__dirname, 'server', 'public');
 
 const t = vscode.l10n.t;
-/** 'ru' or 'en': the UI language, VS Code's display language when we have it, English otherwise. */
-const LANG = /^ru\b/i.test(vscode.env.language) ? 'ru' : 'en';
-const LOCALE = LANG === 'ru' ? 'ru-RU' : 'en-US';
+/** 'ru', 'uk' or 'en': the UI language, VS Code's display language when we have it, English otherwise. */
+const LANG = /^(ru|uk)\b/i.exec(vscode.env.language)?.[1].toLowerCase() || 'en';
+const LOCALE = { ru: 'ru-RU', uk: 'uk-UA', en: 'en-US' }[LANG];
 
 let ctx;
 let server = null;      // server/server.js, running in this process

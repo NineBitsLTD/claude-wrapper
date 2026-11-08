@@ -40,7 +40,7 @@ Claude Wrapper — a VS Code extension (macOS only) around a copy of Claude-AI's
 - `server/public/vscode-shim.js` — loaded first in the webview: the page's channel to the extension
   (`window.cwHost`) and its `fetch('/api/...')` bridge (messages to the extension, the answer streamed
   back), so the page's code works as it does over HTTP.
-- `server/public/i18n.js` — the page's UI language: helpers and the Russian dictionary.
+- `server/public/i18n.js` — the page's UI language: helpers and the Russian and Ukrainian dictionaries.
 - `config/env.example` — settings for the standalone server only.
 - `resources/icon.png` — the extension icon, built by `swift scripts/make-icon.swift` from
   `resources/icon-space.svg` (the picture of babylon-editor's and tts-stt-aloud's icons, label CLAUDE).
@@ -65,15 +65,15 @@ can be stopped.
 
 ## Conventions
 
-- UI language: English by default, Russian when VS Code's display language is Russian. User-facing
-  strings are English in the code with Russian translations next to them: the manifest in
-  `package.nls.json` / `package.nls.ru.json`, `extension.js` through `vscode.l10n.t` with
-  `l10n/bundle.l10n.ru.json`, the page through `tl()` / `tn()` with the dictionary in
+- UI language: English by default, Russian or Ukrainian when that is VS Code's display language.
+  User-facing strings are English in the code with the translations next to them: the manifest in
+  `package.nls.json` / `package.nls.ru.json` / `package.nls.uk.json`, `extension.js` through
+  `vscode.l10n.t` with `l10n/bundle.l10n.ru.json` / `.uk.json`, the page through `tl()` / `tn()` with the dictionaries in
   `server/public/i18n.js` (the language comes in `window.CW.lang`; static markup is translated by
   `i18nDom`). Spoken phrases and their project prefixes follow the language of the message, not the
   UI's (`tlIn(lang, …)`, Russian and Ukrainian in the same file; a language without an entry falls
   back to the UI's, then English). The server's own messages are English; the page translates them with `tlMsg()`.
-  A new string needs its Russian entry in the matching file.
+  A new string needs its Russian and Ukrainian entries in the matching files.
 - Code comments and docs in English.
 - Files start with a header comment describing their role — keep them current.
 - No build step, no runtime npm dependencies.

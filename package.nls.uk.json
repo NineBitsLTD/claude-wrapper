@@ -1,0 +1,15 @@
+{
+  "description": "Чат із Claude Code (обгортка над claude CLI): проєкти, історія, процеси та підагенти ліворуч, чат у правій панелі.",
+  "view.projects": "Проєкти",
+  "view.chat": "Чат",
+  "cmd.refresh": "Оновити",
+  "cmd.newChat": "Новий чат",
+  "cmd.openProject": "Відкрити проєкт",
+  "cmd.openProjectNewWindow": "Відкрити в новому вікні",
+  "cmd.relinkProject": "Перенести історію до іншої папки…",
+  "cmd.openSession": "Відкрити сесію в чаті",
+  "cmd.deleteSession": "Перемістити сесію до Кошика",
+  "cmd.stopProcess": "Зупинити процес",
+  "cmd.stopAgent": "Зупинити підагента",
+  "container.projects": "Проєкти"
+}

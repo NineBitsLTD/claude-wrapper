@@ -1,8 +1,8 @@
 # Claude Wrapper
 
 A VS Code extension (macOS only): a chat with Claude Code through a wrapper around the `claude`
-CLI, whose code is copied from Claude-AI's server (`server/`) and runs inside the extension. The UI is in English, or in Russian when
-VS Code's display language is Russian.
+CLI, whose code is copied from Claude-AI's server (`server/`) and runs inside the extension. The UI is in English, or in Russian or Ukrainian when
+that is VS Code's display language.
 
 - **Left** — the Projects icon: Claude Code's projects (a click opens the project's folder in VS
   Code; a project whose folder is gone asks for the new one and moves its history), and under them

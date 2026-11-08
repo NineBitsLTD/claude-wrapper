@@ -2613,9 +2613,9 @@
    * interacted with the page, which sending a message already counts as.
    */
   /**
-   * Voice answers to permission prompts (Web Speech API recognition, ru-RU).
-   * Only explicit words decide: "разрешаю" → allow, "всегда разрешаю" → allow the tool for this
-   * chat, "запрещаю" / "отклоняю" / "не разрешаю" → deny. Anything with a negation or with both
+   * Voice answers to permission prompts. Only explicit words decide (Russian, Ukrainian or English):
+   * "разрешаю" / "дозволяю" → allow, "всегда разрешаю" / "завжди дозволяю" → allow the tool for this
+   * chat, "запрещаю" / "забороняю" / "отклоняю" / "не разрешаю" → deny. Anything with a negation or with both
    * roots is a denial. Only final results count. Through speakers recognition is paused while the
    * page speaks — its own phrases contain "разреш…" and would otherwise approve themselves; in
    * headphones it keeps listening (for prompts and dictation), with the page's own words filtered
@@ -2853,14 +2853,14 @@
     /** 'allow' | 'always' | 'deny' | null. Denial wins over anything ambiguous. */
     function classify(text) {
       const t = text.toLowerCase().replace(/ё/g, 'е');
-      if (/(^|[^а-я])не\s*разреш|запрещ|запрет|отклон|отказ|\bden(y|ied)\b|\breject|\bdecline|\bdon'?t allow|\bdo not allow|\bnot allow/.test(t)) return 'deny';
-      if (/разреш|\ballow|\bapprove/.test(t)) return /всегда|\balways/.test(t) ? 'always' : 'allow';
+      if (/(^|[^а-яіїєґ])не\s*(разреш|дозвол)|запрещ|запрет|отклон|отказ|заборон|відхил|відмов|\bden(y|ied)\b|\breject|\bdecline|\bdon'?t allow|\bdo not allow|\bnot allow/.test(t)) return 'deny';
+      if (/разреш|дозвол|\ballow|\bapprove/.test(t)) return /всегда|завжди|\balways/.test(t) ? 'always' : 'allow';
       return null;
     }
 
     // Text the page is speaking right now; a phrase that matches it is our own echo.
     let spokenText = '';
-    const norm = (t) => t.toLowerCase().replace(/ё/g, 'е').replace(/[^a-zа-я0-9 ]+/gi, ' ').replace(/\s+/g, ' ').trim();
+    const norm = (t) => t.toLowerCase().replace(/ё/g, 'е').replace(/[^a-zа-яіїєґ0-9 ]+/gi, ' ').replace(/\s+/g, ' ').trim();
     function isEcho(text) {
       if (!spokenText) return false;
       const heardN = norm(text);
@@ -3260,6 +3260,7 @@
     try { Object.assign(cats, JSON.parse(store.get('claude.voiceCats') || '{}')); } catch {}
     let ruVoice = null;
     let enVoice = null;
+    let ukVoice = null;
     const queue = []; // { cat, text } | { cat, chime: failed } ; permission items carry permId
     let current = null;
     let blockedNote = '';
@@ -3308,6 +3309,7 @@
       const best = (re) => speechSynthesis.getVoices().filter((v) => re.test(v.lang)).sort((a, b) => score(b) - score(a))[0] || null;
       ruVoice = best(/^ru/i);
       enVoice = best(/^en/i);
+      ukVoice = best(/^uk/i);
     }
 
     /** The language of a text by its letters, told as TTS / STT Aloud tells it; null without letters. */
@@ -3335,11 +3337,10 @@
       return !langs ? want : [want, LANG, 'en'].find((l) => langs.includes(l)) || want;
     }
 
-    /** Mostly Latin text is read by an English voice, everything else by the Russian one. */
+    /** Mostly Latin text is read by an English voice, Ukrainian by a Ukrainian one if there is one, the rest by the Russian one. */
     function voiceFor(text) {
-      const cyr = (text.match(/[а-яё]/gi) || []).length;
-      const lat = (text.match(/[a-z]/gi) || []).length;
-      return lat > cyr * 2 && enVoice ? enVoice : ruVoice;
+      const lang = detectLang(text);
+      return lang === 'en' && enVoice ? enVoice : lang === 'uk' && ukVoice ? ukVoice : ruVoice;
     }
 
     // --- queue ---
@@ -3522,7 +3523,7 @@
     function speakSystem(item, finish) {
       if (!supported) return finish();
       const u = new SpeechSynthesisUtterance(item.text);
-      const v = (item.lang === 'en' ? enVoice : item.lang ? ruVoice : null) || voiceFor(item.text);
+      const v = { en: enVoice, uk: ukVoice, ru: ruVoice }[item.lang] || voiceFor(item.text);
       u.lang = v?.lang || LOCALE;
       if (v) u.voice = v;
       u.rate = rate;
@@ -4064,11 +4065,11 @@
     };
     let pauseS = clampPause(store.get('claude.dictationPause'));
     const CANCEL_MS = 2500;
-    const CANCEL = /^(отмена|отмени(ть)?|стоп|не отправляй|не надо|cancel|stop|don'?t send|do not send|never ?mind)$/;
-    const CLEAR = /^(очисти(ть)?|сотри|стереть|clear( it)?|erase( it)?)$/;
+    const CANCEL = /^(отмена|отмени(ть)?|стоп|не отправляй|не надо|скасувати|скасуй|не надсилай|не треба|cancel|stop|don'?t send|do not send|never ?mind)$/;
+    const CLEAR = /^(очисти(ть)?|сотри|стереть|очистити|зітри|стерти|clear( it)?|erase( it)?)$/;
     // «отправить» / «отправь» / "send (it)" at the end of a phrase, but not «не отправляй» / "don't send".
-    const SEND_WORD = /(^|\s)(отправ(ить|ь)|send( it)?)$/;
-    const NEGATED = /(^|\s)(не\s+отправ|don'?t\s+send|do\s+not\s+send)/;
+    const SEND_WORD = /(^|\s)(отправ(ить|ь)|надіслати|надішли|send( it)?)$/;
+    const NEGATED = /(^|\s)(не\s+(отправ|надіс|надси|надішл)|don'?t\s+send|do\s+not\s+send)/;
     let enabled = store.get('claude.dictation') !== 'off';
     let sendMode = store.get('claude.dictationSend') || 'pause'; // pause | word
     let isListening = false;
@@ -4134,7 +4135,7 @@
       }
       if (CANCEL.test(n)) return idle(); // nothing to cancel
       const sendNow = SEND_WORD.test(n) && !NEGATED.test(n);
-      const body = sendNow ? text.replace(/[\s,.]*(отправ(ить|ь)|send( it)?)[\s.!]*$/i, '').trim() : text;
+      const body = sendNow ? text.replace(/[\s,.]*(отправ(ить|ь)|надіслати|надішли|send( it)?)[\s.!]*$/i, '').trim() : text;
       if (body) append(body);
       if (sendNow || (sendMode === 'pause' && !held)) {
         clearTimeout(pauseTimer);
@@ -4464,18 +4465,18 @@
 
     function onPhrase(text) {
       const n = normVoice(text);
-      if (/^(стоп|отмена|подожди|не отправляй|stop|cancel|wait|don'?t send)$/.test(n)) {
+      if (/^(стоп|отмена|подожди|не отправляй|скасувати|скасуй|зачекай|не надсилай|stop|cancel|wait|don'?t send)$/.test(n)) {
         if (!autoTimer) return '🎙️ ' + tl('“{0}”: nothing to cancel', text);
         cancelAuto();
         return '🎙️ ' + tl('“{0}” → not sending. Say “answer” when you are ready', text);
       }
-      if (/^(пропусти(ть)?|пропуск|без ответа|дальше|skip( it)?|no answer|next)$/.test(n)) {
+      if (/^(пропусти(ть)?|пропуск|без ответа|дальше|пропустити|без відповіді|далі|skip( it)?|no answer|next)$/.test(n)) {
         cancelAuto();
         skip.click();
         voiceStatus.textContent = '🎙️ ' + tl('“{0}” → going on without an answer', text);
         return 'done';
       }
-      if (/^(ответить|ответь|отправить|отправь|готово|answer|submit|send( it)?|done)$/.test(n)) {
+      if (/^(ответить|ответь|отправить|отправь|готово|відповісти|відповідай|надіслати|надішли|answer|submit|send( it)?|done)$/.test(n)) {
         if (send.disabled) return '🎙️ ' + tl('“{0}”: every question needs an answer first', text);
         cancelAuto();
         send.click();
