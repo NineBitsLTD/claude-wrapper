@@ -2748,7 +2748,7 @@
     };
   };
   /**
-   * In VS Code: TTS / STT MD Aloud records and recognizes (through the extension, ChatView.listen).
+   * In VS Code: TTS / STT Aloud records and recognizes (through the extension, ChatView.listen).
    * Whisper gives whole phrases, no interim results; stop() is answered with an "end" here.
    */
   const hostStt = () => {
@@ -2827,7 +2827,7 @@
   const hearing = (() => {
     const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
     const supported = !!SR;
-    // In VS Code recognition is TTS / STT MD Aloud's: off until the extension says it can be used
+    // In VS Code recognition is TTS / STT Aloud's: off until the extension says it can be used
     // (setHost). Only the window in front dictates, or a phrase would go to every window's chat.
     let hostMic = EMBED ? { enabled: false } : null;
     let focused = true;
@@ -2847,7 +2847,7 @@
       'service-not-allowed': tl('speech recognition is unavailable in this browser'),
       'audio-capture': tl('microphone not found'),
       network: tl('no connection to the recognition service'),
-      host: '', // TTS / STT MD Aloud's own message
+      host: '', // TTS / STT Aloud's own message
     };
 
     /** 'allow' | 'always' | 'deny' | null. Denial wins over anything ambiguous. */
@@ -2892,7 +2892,7 @@
       btn.innerHTML = anyOn ? ICONS.mic : ICONS.micOff;
       btn.title = !supported
         ? tl('The browser doesn’t support speech recognition (Chrome or Edge is needed)')
-        : blocked() ? tl('Speech recognition is turned off in TTS / STT MD Aloud')
+        : blocked() ? tl('Speech recognition is turned off in TTS / STT Aloud')
         : fatal ? tl('Microphone: {0}', FATAL[fatal])
         : rec?.ready ? tl('The microphone is listening — settings')
         : tl('Microphone settings');
@@ -3073,12 +3073,12 @@
         menu.appendChild(n);
       };
       const recognitionSettings = () => {
-        const b = Object.assign(document.createElement('button'), { type: 'button', className: 'menu-row', textContent: tl('Recognition settings…'), title: tl('The settings of TTS / STT MD Aloud') });
+        const b = Object.assign(document.createElement('button'), { type: 'button', className: 'menu-row', textContent: tl('Recognition settings…'), title: tl('The settings of TTS / STT Aloud') });
         b.onclick = (e) => { e.stopPropagation(); toggleMenu(false); toHost({ type: 'tts', op: 'settings' }); };
         menu.appendChild(b);
       };
       if (blocked()) {
-        note(tl('Speech recognition is turned off in TTS / STT MD Aloud'));
+        note(tl('Speech recognition is turned off in TTS / STT Aloud'));
         return recognitionSettings();
       }
 
@@ -3156,7 +3156,7 @@
       get active() { return supported && !blocked() && promptsOn && !fatal; },
       /** Whether the output device matters now: something is, or may be, listened for. */
       get wantsDevice() { return !blocked() && (dictation.enabled || queue.length > 0); },
-      /** In VS Code: TTS / STT MD Aloud is installed (the button shows) and may use the microphone. */
+      /** In VS Code: TTS / STT Aloud is installed (the button shows) and may use the microphone. */
       setHost(info) {
         $('micBtn').closest('.voice-wrap').hidden = !info?.available;
         const enabled = !!info?.available && !!info.stt?.enabled;
@@ -3225,7 +3225,7 @@
   document.addEventListener('visibilitychange', () => hearing.update());
 
   /**
-   * Speech output (Web Speech API, system voices — no network; in VS Code the TTS / STT MD Aloud
+   * Speech output (Web Speech API, system voices — no network; in VS Code the TTS / STT Aloud
    * extension speaks when it is installed — its voice, speed and volume). Categories can be switched
    * separately in the 🔊 menu: permission prompts, Claude's answers, tool calls, end of work.
    * Phrases go through one queue, by priority (PRIORITY): a permission prompt or question comes
@@ -3274,14 +3274,14 @@
     let sileroDownUntil = 0;
     let sileroError = '';
     let playing = null; // <audio> of the current Silero phrase
-    // In VS Code: the TTS / STT MD Aloud extension speaks each phrase (through this page's
+    // In VS Code: the TTS / STT Aloud extension speaks each phrase (through this page's
     // extension, see extension.js `aloud`) with the voice, speed and volume of its settings.
     let host = null; // { available, enabled, driver, langs } from the extension
     let hostError = '';
     const hostWaits = new Map(); // phrase id -> its answer handler
     let hostSeq = 0;
     const useHost = () => !!host?.available;
-    // Who goes first, in this window's queue and among the windows (TTS / STT MD Aloud's levels):
+    // Who goes first, in this window's queue and among the windows (TTS / STT Aloud's levels):
     // what waits for an answer, then messages and what a person asked to read, then the thinking
     // and the announcements of commands.
     const PRIORITY = { permissions: 2, answers: 1, read: 1, doc: 1, test: 1, done: 1, sent: 1, thinking: 0, tools: 0 };
@@ -3310,7 +3310,7 @@
       enVoice = best(/^en/i);
     }
 
-    /** The language of a text by its letters, told as TTS / STT MD Aloud tells it; null without letters. */
+    /** The language of a text by its letters, told as TTS / STT Aloud tells it; null without letters. */
     function detectLang(text) {
       const sample = String(text || '').slice(0, 4000);
       const cyr = (sample.match(/[а-яёіїєґ]/gi) || []).length;
@@ -3326,7 +3326,7 @@
     }
     /**
      * The language to speak a phrase in (its voice and the words added around it): of its own words,
-     * else of the chat so far, else VS Code's. When no voice of TTS / STT MD Aloud speaks it: VS
+     * else of the chat so far, else VS Code's. When no voice of TTS / STT Aloud speaks it: VS
      * Code's language or English.
      */
     function speechLang(own) {
@@ -3371,7 +3371,7 @@
       pauseBtn.setAttribute('aria-label', pauseBtn.title);
     }
 
-    /** The player's pause. TTS / STT MD Aloud can't hold a phrase: it is said again from its start. */
+    /** The player's pause. TTS / STT Aloud can't hold a phrase: it is said again from its start. */
     function holdSpeech() {
       const item = current;
       if (!item || held) return;
@@ -3491,7 +3491,7 @@
     }
 
     /**
-     * A phrase spoken by TTS / STT MD Aloud (the next one is prepared meanwhile). If it fails, this
+     * A phrase spoken by TTS / STT Aloud (the next one is prepared meanwhile). If it fails, this
      * phrase is spoken by the system voice here and the menu shows why.
      */
     function speakHost(item, finish) {
@@ -3511,7 +3511,7 @@
       const lang = item.lang || speechLang(item.text);
       toHost({
         type: 'tts', op: 'speak', id, text: item.text, lang,
-        // TTS / STT MD Aloud queues the speaker among the windows: a higher level pauses a lower
+        // TTS / STT Aloud queues the speaker among the windows: a higher level pauses a lower
         // one being played elsewhere, which then says it goes on.
         priority: rank(item),
         resumeText: inProject(lang, 'Continuing on the project {0}', 'Continuing'), resumeLang: lang,
@@ -3740,7 +3740,7 @@
       const on = supported && enabled && any && !hostOff;
       btn.innerHTML = on ? ICONS.speaker : ICONS.speakerOff;
       btn.classList.toggle('off', !on);
-      btn.title = !supported ? tl('The browser doesn’t support speech synthesis') : hostOff ? tl('Speech is turned off in TTS / STT MD Aloud') : blockedNote || tl('Voice settings');
+      btn.title = !supported ? tl('The browser doesn’t support speech synthesis') : hostOff ? tl('Speech is turned off in TTS / STT Aloud') : blockedNote || tl('Voice settings');
     }
 
     function renderMenu() {
@@ -3769,12 +3769,12 @@
         renderMenu();
       }, { strong: true });
       const hostSettings = () => {
-        const b = Object.assign(document.createElement('button'), { type: 'button', className: 'menu-row', textContent: tl('Voice, speed and volume…'), title: tl('The settings of TTS / STT MD Aloud') });
+        const b = Object.assign(document.createElement('button'), { type: 'button', className: 'menu-row', textContent: tl('Voice, speed and volume…'), title: tl('The settings of TTS / STT Aloud') });
         b.onclick = (e) => { e.stopPropagation(); toggleMenu(false); toHost({ type: 'tts', op: 'settings' }); };
         menu.appendChild(b);
       };
       if (useHost() && !host.enabled) {
-        menu.appendChild(Object.assign(document.createElement('div'), { className: 'menu-note', textContent: tl('Speech is turned off in TTS / STT MD Aloud') }));
+        menu.appendChild(Object.assign(document.createElement('div'), { className: 'menu-note', textContent: tl('Speech is turned off in TTS / STT Aloud') }));
         hostSettings();
       }
       for (const [cat, label] of Object.entries(CATS)) {
@@ -3798,19 +3798,19 @@
         menu.appendChild(l);
       }
       if (useHost()) {
-        // The voice, its speed and volume are TTS / STT MD Aloud's.
+        // The voice, its speed and volume are TTS / STT Aloud's.
         const DRIVERS = { system: tl('system voices'), piper: 'Piper', silero: 'Silero' };
         const driver = String(host.driver || 'system');
         menu.appendChild(Object.assign(document.createElement('div'), { className: 'menu-section', textContent: tl('Voice') }));
-        menu.appendChild(Object.assign(document.createElement('div'), { className: 'menu-note', textContent: tl('TTS / STT MD Aloud speaks: {0}', DRIVERS[driver] || driver.replace(/^external:/, '')) }));
+        menu.appendChild(Object.assign(document.createElement('div'), { className: 'menu-note', textContent: tl('TTS / STT Aloud speaks: {0}', DRIVERS[driver] || driver.replace(/^external:/, '')) }));
         if (host.enabled) hostSettings();
         const test = Object.assign(document.createElement('button'), { type: 'button', className: 'menu-row', textContent: tl('▶ Test the voice'), disabled: !enabled || !host.enabled });
         test.onclick = (e) => { e.stopPropagation(); enqueue([{ cat: 'test', text: testPhrase() }]); };
         menu.appendChild(test);
-        if (hostError) menu.appendChild(Object.assign(document.createElement('div'), { className: 'menu-note', textContent: '⚠️ ' + tl('TTS / STT MD Aloud: {0} — the system voice speaks for now', hostError) }));
+        if (hostError) menu.appendChild(Object.assign(document.createElement('div'), { className: 'menu-note', textContent: '⚠️ ' + tl('TTS / STT Aloud: {0} — the system voice speaks for now', hostError) }));
         return;
       }
-      if (EMBED) menu.appendChild(Object.assign(document.createElement('div'), { className: 'menu-note', textContent: tl('More voices (Piper, Silero): the TTS / STT MD Aloud extension') }));
+      if (EMBED) menu.appendChild(Object.assign(document.createElement('div'), { className: 'menu-note', textContent: tl('More voices (Piper, Silero): the TTS / STT Aloud extension') }));
       {
         // Speech rate (both voices); double-click resets to normal.
         const l = document.createElement('label');
@@ -3907,7 +3907,7 @@
       refreshMenu: renderMenu,
       /** The server offers the Silero voice (from /api/info). */
       setSilero(available) { sileroAvailable = !!available; renderMenu(); },
-      /** In VS Code: whether TTS / STT MD Aloud speaks, and its settings ({ available, enabled, driver, langs }). */
+      /** In VS Code: whether TTS / STT Aloud speaks, and its settings ({ available, enabled, driver, langs }). */
       setHost(info) {
         const had = useHost();
         host = info || null;
@@ -3916,7 +3916,7 @@
         if (useHost() && !host.enabled) stopAll();
         renderMenu();
       },
-      /** TTS / STT MD Aloud's answer for a phrase: { id, done } or { id, error }. */
+      /** TTS / STT Aloud's answer for a phrase: { id, done } or { id, error }. */
       hostDone(m) {
         const handle = hostWaits.get(m.id);
         if (!handle) return;
@@ -3959,7 +3959,7 @@
         if (current?.cat === 'doc') cancelCurrent();
         pump();
       },
-      /** Whether a message can be read aloud now (the speech isn't off in TTS / STT MD Aloud). */
+      /** Whether a message can be read aloud now (the speech isn't off in TTS / STT Aloud). */
       get canRead() { return supported && !(useHost() && !host.enabled); },
       /** Reads a text from its start, whole, whatever the voice switches say: it was asked for. */
       readNow(text) {
@@ -10601,7 +10601,7 @@
     const [gear, ...sound] = document.querySelectorAll('nav.activity .voice-wrap');
     const tools = Object.assign(document.createElement('span'), { className: 'head-tools' });
     tools.append(...sound, gear);
-    tools.querySelector('#micBtn').closest('.voice-wrap').hidden = true; // until TTS / STT MD Aloud is known to be there (hearing.setHost)
+    tools.querySelector('#micBtn').closest('.voice-wrap').hidden = true; // until TTS / STT Aloud is known to be there (hearing.setHost)
     $('mode').after(tools);
     // A menu of those buttons opens under its button, right-aligned; in a narrow panel (the block
     // wrapped to the left) it would stick out of the window: kept inside it.

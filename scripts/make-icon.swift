@@ -2,7 +2,7 @@
 // resources/icon-space.svg — the icon of the universe page of gw (a planet in its orbit among
 // stars; in this copy the small star that was over the label is moved under the big star on the
 // right, and the big star on the left up and to the left) —, turned by -90°, with the label
-// CLAUDE (the same picture as the icons of babylon-editor and tts-stt-md-aloud, which have the
+// CLAUDE (the same picture as the icons of babylon-editor and tts-stt-aloud, which have the
 // labels BABYLON and TTS/STT MD). The picture fills a square with rounded corners (its drawn bounds, outline
 // included, centred, with a margin); the label stays inside those bounds, in their bottom right
 // corner: its right edge at the outermost star on the right, its bottom a little above the bottom
