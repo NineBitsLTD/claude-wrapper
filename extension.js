@@ -24,7 +24,7 @@
  *   'mcp' | 'tts' | 'stt' | 'audioOut' | 'openFile' | 'showView' }, extension -> page { target:
  *   'claude-wrapper', type: 'setProject' | 'loadSession' | 'newChat' | 'stop' | 'finish' | 'tts' |
  *   'ttsInfo' | 'stt' | 'audioOut' | 'windowFocus' }. 'tts' is the chat's speech and 'stt' its
- *   microphone, both through the TTS / STT MD Aloud extension when it is installed (`aloud`);
+ *   microphone, both through the TTS / STT Aloud extension when it is installed (`aloud`);
  *   'audioOut' names the Mac's sound output (headphones or speakers, for listening while it speaks); the
  *   page's state carries `busy` (opening another folder while Claude works asks first,
  *   whenChatMayLeave) and `runId` (its live Claude process, whose MCP servers the side bar
@@ -1083,7 +1083,7 @@ class McpSubject {
 const TEXT_TYPE = /^(text\/|application\/(json|x-ndjson|javascript))/i;
 
 /**
- * The chat's voice: the TTS / STT MD Aloud extension, when installed, speaks the page's phrases
+ * The chat's voice: the TTS / STT Aloud extension, when installed, speaks the page's phrases
  * with the voice, speed and volume of its settings (its API: tts.speak / stop, settings(),
  * onDidChangeSettings). The page asks with { type: 'tts', op: 'speak', id, text, lang, priority,
  * resumeText, resumeLang, next } and gets { type: 'tts', id, done } or { id, error }. It queues the
@@ -1094,7 +1094,7 @@ const TEXT_TYPE = /^(text\/|application\/(json|x-ndjson|javascript))/i;
  * microphone). The microphone: { type: 'stt', op: 'start', id } listens (ChatView.listen), answers
  * { type: 'stt', id, event: 'ready' | 'result' | 'error' | 'end', text, error, message }; 'stop' ends it.
  */
-const ALOUD_ID = 'ninebits.tts-stt-md-aloud';
+const ALOUD_ID = 'ninebits.tts-stt-aloud';
 /** The Mac's default sound output, { label } or null: the page tells headphones from speakers by it. */
 let audioQuery = null;
 function defaultAudioOutput() {
@@ -1113,7 +1113,7 @@ function defaultAudioOutput() {
 }
 
 const MIC_WAIT_MS = 8000; // of silence, in one recording
-const MIC_TURN_MS = 300;  // TTS / STT MD Aloud's waiters look at the microphone every 100 ms and settle for 100 ms
+const MIC_TURN_MS = 300;  // TTS / STT Aloud's waiters look at the microphone every 100 ms and settle for 100 ms
 const micTurn = () => new Promise((resolve) => setTimeout(resolve, MIC_TURN_MS));
 
 const aloud = {
@@ -1229,12 +1229,12 @@ class ChatView {
     aloud.stopMic();
   }
   /**
-   * The page's microphone: TTS / STT MD Aloud records a phrase and recognizes it, again and again
+   * The page's microphone: TTS / STT Aloud records a phrase and recognizes it, again and again
    * until the page stops it (a phrase stopped midway is dropped). The microphone is queued among
    * the windows, so a recording holds it only for MIC_WAIT_MS of silence and it is left free for
    * MIC_TURN_MS after each one: a window waiting for it gets its turn. A person taking it over
    * (Dictate, Test microphone) ends a recording, which is no phrase then. Any failure but a busy
-   * microphone (TTS / STT MD Aloud before 1.5.0 rejects then) ends the listening with its reason.
+   * microphone (TTS / STT Aloud before 1.5.0 rejects then) ends the listening with its reason.
    */
   async listen(id) {
     this.stopMic();
@@ -1264,15 +1264,15 @@ class ChatView {
     }
     if (this.mic === run) { this.mic = null; send({ event: 'end' }); }
   }
-  /** Whether TTS / STT MD Aloud speaks for the page, and its settings. */
+  /** Whether TTS / STT Aloud speaks for the page, and its settings. */
   async postTtsInfo() {
     this.post({ type: 'ttsInfo', info: await aloud.info() });
   }
-  /** The page's speech through TTS / STT MD Aloud (see `aloud`). */
+  /** The page's speech through TTS / STT Aloud (see `aloud`). */
   async speech(m) {
     if (m.op === 'stop') return aloud.stop();
     if (m.op === 'settings') {
-      return vscode.commands.executeCommand('tts-stt-md-aloud.speech.focus')
+      return vscode.commands.executeCommand('tts-stt-aloud.speech.focus')
         .then(undefined, () => vscode.commands.executeCommand('workbench.action.openSettings', '@ext:' + ALOUD_ID));
     }
     if (m.op !== 'speak' || typeof m.text !== 'string') return;
@@ -1434,7 +1434,7 @@ function activate(context) {
 
   chat = new ChatView();
   context.subscriptions.push(vscode.window.registerWebviewViewProvider('claudeWrapper.chat', chat, { webviewOptions: { retainContextWhenHidden: true } }));
-  // The chat's voice: TTS / STT MD Aloud's settings changed, or it was installed / removed.
+  // The chat's voice: TTS / STT Aloud's settings changed, or it was installed / removed.
   aloud.onChange = () => chat.postTtsInfo();
   context.subscriptions.push(vscode.extensions.onDidChange(() => { aloud.reset(); chat.postTtsInfo(); }), { dispose: () => aloud.reset() });
   context.subscriptions.push(vscode.window.onDidChangeWindowState((state) => chat.post({ type: 'windowFocus', focused: state.focused })));

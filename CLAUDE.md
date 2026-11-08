@@ -22,8 +22,8 @@ Claude Wrapper — a VS Code extension (macOS only) around a copy of Claude-AI's
   page to a browser — handy for working on the page. Left out of the copy: the test API
   (api-gateway), image generation and its MCP bridge, the Cloudflare tunnel, the terminal, the file
   translation, the vendored Monaco/xterm, the built-in Python voice (tts-local) and the Swift speech
-  recognition (stt). The chat's voice comes from the VS Code extension TTS / STT MD Aloud
-  (`ninebits.tts-stt-md-aloud`, its API) when it is installed: its voice, speed and volume; without it
+  recognition (stt). The chat's voice comes from the VS Code extension TTS / STT Aloud
+  (`ninebits.tts-stt-aloud`, its API) when it is installed: its voice, speed and volume; without it
   the page speaks with the system voice. The microphone is its recording and Whisper recognition
   (hidden without the extension, off while its STT is off); it queues the speaker and the microphone
   among the windows, so the chat's phrases wait for their turn, by priority (questions and permission
@@ -34,7 +34,7 @@ Claude Wrapper — a VS Code extension (macOS only) around a copy of Claude-AI's
   (extension.js chatHtml: a CSP with nonces, `window.CW` = { embed: 'vscode', cwd, lang }); there it
   hides everything but the chat column (VS Code has the explorer, editor, terminal) and moves the
   voice/microphone/settings buttons into the chat head after the permission mode; its speech and
-  its microphone go through the extension to TTS / STT MD Aloud (extension.js `aloud`). While it
+  its microphone go through the extension to TTS / STT Aloud (extension.js `aloud`). While it
   speaks, a player over the message box goes by phrases, pauses and stops; a speaker on the message
   or thinking block under the pointer reads that one aloud.
 - `server/public/vscode-shim.js` — loaded first in the webview: the page's channel to the extension
@@ -43,7 +43,7 @@ Claude Wrapper — a VS Code extension (macOS only) around a copy of Claude-AI's
 - `server/public/i18n.js` — the page's UI language: helpers and the Russian dictionary.
 - `config/env.example` — settings for the standalone server only.
 - `resources/icon.png` — the extension icon, built by `swift scripts/make-icon.swift` from
-  `resources/icon-space.svg` (the picture of babylon-editor's and tts-stt-md-aloud's icons, label CLAUDE).
+  `resources/icon-space.svg` (the picture of babylon-editor's and tts-stt-aloud's icons, label CLAUDE).
 - `npm run pack` — the .vsix (`@vscode/vsce`, a dev dependency).
 - `media/codicons/` — VS Code's icon font for the webview views (copied from the dev dependency
   `@vscode/codicons` by `npm run codicons`; CC-BY-4.0), so their icons and twisties match VS Code's trees.
