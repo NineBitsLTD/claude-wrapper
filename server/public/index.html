@@ -93,14 +93,24 @@
   #send { background: var(--accent); color: var(--accent-text); border: none; border-radius: 10px;
           padding: 10px 16px; cursor: pointer; min-width: 90px; }
   #send:disabled { opacity: .5; cursor: default; }
-  #stopSpeech {
-    width: 44px; height: 44px; flex: none; display: grid; place-items: center; padding: 0; cursor: pointer;
-    background: var(--bg); color: var(--accent); border: 1px solid var(--accent); border-radius: 10px;
-  }
-  #stopSpeech[hidden] { display: none; }
-  #stopSpeech:hover { background: var(--user-bg); }
-  #stopSpeech svg { width: 22px; height: 22px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
-  #stopSpeech svg rect { fill: currentColor; stroke: none; }
+  /* The speech player: over the message box while anything is spoken. */
+  #player { display: flex; gap: 4px; max-width: 860px; margin: 0 auto 6px; }
+  #player[hidden] { display: none; }
+  #player button { width: 34px; height: 28px; flex: none; display: grid; place-items: center; padding: 0; cursor: pointer;
+    background: var(--bg); color: var(--accent); border: 1px solid var(--border); border-radius: 8px; }
+  #player button:hover:not(:disabled) { background: var(--user-bg); border-color: var(--accent); }
+  #player button:disabled { opacity: .4; cursor: default; }
+  #player svg, #msgSpeak svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+  #player svg .solid { fill: currentColor; stroke: none; }
+  /* Read a message or a thinking block aloud: a speaker put on the one under the pointer. */
+  details.thinking summary { position: relative; }
+  #msgSpeak { z-index: 1; width: 28px; height: 24px; display: grid; place-items: center; padding: 0; cursor: pointer;
+    background: var(--panel); color: var(--text); border: 1px solid var(--border); border-radius: 8px; box-shadow: 0 2px 8px rgba(0,0,0,.12); }
+  #msgSpeak:hover { background: var(--user-bg); color: var(--accent); }
+  /* Stays in sight along a long message; its margins make it take no room from the text. */
+  .msg > #msgSpeak { position: sticky; top: 4px; float: right; margin: -12px 8px -12px -36px; }
+  .msg.user > #msgSpeak { float: left; margin: -12px -36px -12px 8px; }
+  summary > #msgSpeak { position: absolute; top: -3px; right: 0; }
   .hint { max-width: 860px; margin: 6px auto 0; color: var(--muted); font-size: 12px; }
   .perm {
     border: 1px solid var(--accent); border-radius: 10px; padding: 10px 12px; background: var(--panel);
@@ -868,13 +878,18 @@
   <div id="dictBar" hidden aria-live="polite"><span class="txt"></span><button class="btn" id="dictCancel" type="button" hidden>Cancel</button></div>
   <div id="spinner" aria-live="off"><span class="glyph">✻</span><span class="verb"></span> <span class="info"></span><button type="button" class="queued-count" title="Show the first queued message" hidden></button></div>
   <div id="attachments" hidden></div>
+  <div id="player" role="toolbar" aria-label="Speech player" hidden>
+    <button id="playerPrev" type="button" title="Previous phrase" aria-label="Previous phrase"></button>
+    <button id="playerPause" type="button" title="Pause" aria-label="Pause"></button>
+    <button id="playerStop" type="button" title="Stop speech" aria-label="Stop speech"></button>
+    <button id="playerNext" type="button" title="Next phrase" aria-label="Next phrase"></button>
+  </div>
   <form id="form">
     <div class="composer">
       <div id="slash" role="listbox"></div>
       <div id="mention" role="listbox" hidden></div>
       <textarea id="prompt" rows="1" placeholder="Message for Claude…" autofocus></textarea>
     </div>
-    <button id="stopSpeech" type="button" title="Stop speech" aria-label="Stop speech" hidden></button>
     <button id="send" type="submit">Send</button>
   </form>
   <div class="hint">Enter — send (also while working), Shift+Enter — new line, <span id="histKeys">⌘↑/⌘↓</span> — past messages, Shift+Tab — mode, / — commands, @ — file, paste an image — ⌘V, Esc — interrupt</div>
@@ -2609,7 +2624,11 @@
    */
   const ICONS = {
     speaker: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M11 5 6 9H3v6h3l5 4z"/><path d="M15.5 8.5a5 5 0 0 1 0 7M18.5 5.5a9 9 0 0 1 0 13"/></svg>',
-    speechStop: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M10 5 5.5 9H3v6h2.5l4.5 4z"/><rect x="14" y="9" width="7" height="7" rx="1.5"/></svg>',
+    prev: '<svg viewBox="0 0 24 24" aria-hidden="true"><path class="solid" d="M19 6v12l-9-6z"/><path d="M6 6v12"/></svg>',
+    next: '<svg viewBox="0 0 24 24" aria-hidden="true"><path class="solid" d="M5 6v12l9-6z"/><path d="M18 6v12"/></svg>',
+    pause: '<svg viewBox="0 0 24 24" aria-hidden="true"><rect class="solid" x="7" y="5" width="3.5" height="14" rx="1"/><rect class="solid" x="13.5" y="5" width="3.5" height="14" rx="1"/></svg>',
+    play: '<svg viewBox="0 0 24 24" aria-hidden="true"><path class="solid" d="M7 5v14l12-7z"/></svg>',
+    stop: '<svg viewBox="0 0 24 24" aria-hidden="true"><rect class="solid" x="6" y="6" width="12" height="12" rx="2"/></svg>',
     speakerOff: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M11 5 6 9H3v6h3l5 4z"/><path d="m16 9 6 6M22 9l-6 6"/></svg>',
     mic: '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3M8 21h8"/></svg>',
     micOff: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15 10V6a3 3 0 0 0-5.7-1.3M9 9v2a3 3 0 0 0 5 2.2"/><path d="M5 11a7 7 0 0 0 11.5 5.4M19 11a7 7 0 0 1-.6 2.8M12 18v3M8 21h8M3 3l18 18"/></svg>',
@@ -2628,6 +2647,8 @@
     let detected = { kind: 'unknown', label: '' };
 
     async function detect() {
+      // In VS Code the webview gets no device names: the extension asks macOS (setDevice answers).
+      if (HOST_ORIGIN) return toHost({ type: 'audioOut' });
       try {
         const outs = (await navigator.mediaDevices.enumerateDevices()).filter((d) => d.kind === 'audiooutput');
         const def = outs.find((d) => d.deviceId === 'default') || outs[0];
@@ -2641,6 +2662,7 @@
 
     /** Asks for the microphone once so that device names become visible, then re-detects. */
     async function unlockLabels() {
+      if (HOST_ORIGIN) return detect();
       try {
         const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
         stream.getTracks().forEach((t) => t.stop());
@@ -2655,6 +2677,14 @@
       get mode() { return mode; },
       setMode(m) { mode = m; store.set('claude.audioOut', m); listeners.forEach((fn) => fn()); },
       get detected() { return detected; },
+      /** The default output device from the extension ({ label } or null); only a change counts. */
+      setDevice(device) {
+        const label = device?.label || '';
+        const kind = !label ? 'unknown' : HEADPHONES.test(label) ? 'headphones' : 'speakers';
+        if (kind === detected.kind && label === detected.label) return;
+        detected = { kind, label };
+        listeners.forEach((fn) => fn());
+      },
       isHeadphones() { return mode === 'headphones' || (mode === 'auto' && detected.kind === 'headphones'); },
       onChange(fn) { listeners.add(fn); },
       detect, unlockLabels,
@@ -2717,7 +2747,31 @@
       onEvent(fn) { listener = fn; },
     };
   };
-  const sttBackend = window.ninebits?.stt || (SERVER_STT ? serverStt() : null);
+  /**
+   * In VS Code: TTS / STT MD Aloud records and recognizes (through the extension, ChatView.listen).
+   * Whisper gives whole phrases, no interim results; stop() is answered with an "end" here.
+   */
+  const hostStt = () => {
+    let listener = null;
+    let seq = 0;
+    let open = 0; // the listening whose answers count
+    return {
+      start() { open = ++seq; toHost({ type: 'stt', op: 'start', id: open }); },
+      stop() {
+        open = 0;
+        toHost({ type: 'stt', op: 'stop' });
+        setTimeout(() => listener?.({ type: 'end' }), 0);
+      },
+      onEvent(fn) { listener = fn; },
+      /** The extension's answer: { id, event: 'ready' | 'result' | 'error' | 'end', text, error, message }. */
+      event(m) {
+        if (m.id !== open) return;
+        if (m.event === 'end') open = 0;
+        listener?.(m.event === 'result' ? { type: 'result', text: m.text, final: true } : { type: m.event, error: m.error, message: m.message });
+      },
+    };
+  };
+  const sttBackend = window.ninebits?.stt || (HOST_ORIGIN ? hostStt() : SERVER_STT ? serverStt() : null);
   if (sttBackend) {
     let current = null;    // the instance that owns the microphone
     let staleEnds = 0;     // "end" events still due for stop() calls of earlier instances
@@ -2771,10 +2825,13 @@
   }
 
   const hearing = (() => {
-    // In VS Code there is no recognition yet (the Web Speech one needs Google's service, which
-    // Electron lacks; TTS / STT MD Aloud doesn't recognize speech yet): the microphone is off and hidden.
-    const SR = EMBED ? null : window.SpeechRecognition || window.webkitSpeechRecognition;
+    const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
     const supported = !!SR;
+    // In VS Code recognition is TTS / STT MD Aloud's: off until the extension says it can be used
+    // (setHost). Only the window in front dictates, or a phrase would go to every window's chat.
+    let hostMic = EMBED ? { enabled: false } : null;
+    let focused = true;
+    const blocked = () => !!hostMic && !hostMic.enabled;
     const btn = $('micBtn');
     const menu = $('micMenu');
     const LISTEN_MS = 120000; // per prompt; after that only the buttons remain
@@ -2790,6 +2847,7 @@
       'service-not-allowed': tl('speech recognition is unavailable in this browser'),
       'audio-capture': tl('microphone not found'),
       network: tl('no connection to the recognition service'),
+      host: '', // TTS / STT MD Aloud's own message
     };
 
     /** 'allow' | 'always' | 'deny' | null. Denial wins over anything ambiguous. */
@@ -2822,18 +2880,19 @@
 
     /** Always-on dictation: only with headphones (no echo of the page's own speech). */
     // Only the tab in front dictates — otherwise every open tab would send the same phrase.
-    const dictating = () => dictation.enabled && audioOut.isHeadphones() && document.visibilityState === 'visible';
+    const dictating = () => dictation.enabled && audioOut.isHeadphones() && document.visibilityState === 'visible' && focused;
     /** The prompt the next phrase answers, if answering by voice is on and it has been announced. */
     const activePrompt = () => (promptsOn && queue[0]?.armed ? queue[0] : null);
     const WAIT_TEXT = tl('🎙️ I’ll start listening for the answer once I’ve read the request out');
 
     function render() {
-      const anyOn = supported && !fatal && (promptsOn || dictation.enabled);
+      const anyOn = supported && !blocked() && !fatal && (promptsOn || dictation.enabled);
       btn.classList.toggle('off', !anyOn);
       btn.classList.toggle('live', !!rec?.ready);
       btn.innerHTML = anyOn ? ICONS.mic : ICONS.micOff;
       btn.title = !supported
         ? tl('The browser doesn’t support speech recognition (Chrome or Edge is needed)')
+        : blocked() ? tl('Speech recognition is turned off in TTS / STT MD Aloud')
         : fatal ? tl('Microphone: {0}', FATAL[fatal])
         : rec?.ready ? tl('The microphone is listening — settings')
         : tl('Microphone settings');
@@ -2871,7 +2930,7 @@
     }
 
     function startRec() {
-      if (!supported || rec || fatal) return;
+      if (!supported || blocked() || rec || fatal) return;
       const p = activePrompt();
       if (paused && !listenWhileSpeaking()) return;
       if (p && Date.now() - p.started > LISTEN_MS) {
@@ -2917,6 +2976,7 @@
         }
       };
       r.onerror = (e) => {
+        if (e.error === 'host') FATAL.host = e.message;
         if (FATAL[e.error]) {
           fatal = e.error;
           render();
@@ -3012,12 +3072,24 @@
         n.textContent = text;
         menu.appendChild(n);
       };
+      const recognitionSettings = () => {
+        const b = Object.assign(document.createElement('button'), { type: 'button', className: 'menu-row', textContent: tl('Recognition settings…'), title: tl('The settings of TTS / STT MD Aloud') });
+        b.onclick = (e) => { e.stopPropagation(); toggleMenu(false); toHost({ type: 'tts', op: 'settings' }); };
+        menu.appendChild(b);
+      };
+      if (blocked()) {
+        note(tl('Speech recognition is turned off in TTS / STT MD Aloud'));
+        return recognitionSettings();
+      }
 
       row(tl('Answers to permission requests'), promptsOn, setPrompts,
         tl('While a permission request waits, the microphone listens for “allow” or “deny”'));
       row(tl('Voice input of messages'), dictation.enabled, (v) => dictation.setEnabled(v),
         tl('Dictating and sending messages; headphones only'));
-      if (fatal) note('⚠️ ' + FATAL[fatal]);
+      if (fatal) {
+        note('⚠️ ' + FATAL[fatal]);
+        if (hostMic) recognitionSettings();
+      }
 
       const head = document.createElement('div');
       head.className = 'menu-section';
@@ -3068,7 +3140,10 @@
     function toggleMenu(open = menu.hidden) {
       menu.hidden = !open;
       btn.setAttribute('aria-expanded', String(open));
-      if (open) renderMenu();
+      if (open) {
+        renderMenu();
+        if (HOST_ORIGIN) audioOut.detect();
+      }
     }
     btn.onclick = (e) => { e.stopPropagation(); voice.closeMenu(); toggleMenu(); };
     document.addEventListener('click', (e) => {
@@ -3078,7 +3153,22 @@
     setTimeout(render, 0);
 
     return {
-      get active() { return supported && promptsOn && !fatal; },
+      get active() { return supported && !blocked() && promptsOn && !fatal; },
+      /** Whether the output device matters now: something is, or may be, listened for. */
+      get wantsDevice() { return !blocked() && (dictation.enabled || queue.length > 0); },
+      /** In VS Code: TTS / STT MD Aloud is installed (the button shows) and may use the microphone. */
+      setHost(info) {
+        $('micBtn').closest('.voice-wrap').hidden = !info?.available;
+        const enabled = !!info?.available && !!info.stt?.enabled;
+        if (enabled !== hostMic.enabled) { hostMic = { enabled }; update(); }
+        else render();
+      },
+      /** In VS Code: whether this window is in front (only then it dictates). */
+      setFocused(v) {
+        if (v === focused) return;
+        focused = v;
+        update();
+      },
       get menuOpen() { return !menu.hidden; },
       closeMenu() { if (!menu.hidden) toggleMenu(false); },
       /** Starts listening for a prompt (queued behind earlier ones). */
@@ -3088,7 +3178,7 @@
        * via onPhrase(text), which returns 'done' once answered or a status line to show.
        */
       listen(id, statusEl, onDecision, { kind = 'permission', onPhrase, onInterim } = {}) {
-        if (!supported) return;
+        if (!supported || blocked()) return;
         // Not armed yet: voice.permission() arms it when its announcement starts (or at once
         // when nothing will be said).
         const p = { id, statusEl, onDecision, kind, onPhrase, onInterim, armed: false, started: Date.now() };
@@ -3142,6 +3232,8 @@
    * waits its turn too (nothing already queued is interrupted), and the microphone starts listening
    * for its answer when its announcement starts. Through speakers recognition is paused while
    * anything is spoken (the page's phrases contain "разреш…" / "allow"); in headphones it goes on.
+   * While anything is spoken the player over the message box goes back and forth by phrases, pauses
+   * and stops; a speaker on the message or thinking block under the pointer reads that one aloud.
    */
   const voice = (() => {
     const supported = 'speechSynthesis' in window;
@@ -3184,7 +3276,7 @@
     let playing = null; // <audio> of the current Silero phrase
     // In VS Code: the TTS / STT MD Aloud extension speaks each phrase (through this page's
     // extension, see extension.js `aloud`) with the voice, speed and volume of its settings.
-    let host = null; // { available, enabled, driver } from the extension
+    let host = null; // { available, enabled, driver, langs } from the extension
     let hostError = '';
     const hostWaits = new Map(); // phrase id -> its answer handler
     let hostSeq = 0;
@@ -3213,11 +3305,29 @@
       enVoice = best(/^en/i);
     }
 
-    /** The language of a phrase for TTS / STT MD Aloud's voice choice: as voiceFor, by its letters. */
-    function langOf(text) {
-      const cyr = (text.match(/[а-яё]/gi) || []).length;
-      const lat = (text.match(/[a-z]/gi) || []).length;
-      return lat > cyr * 2 ? 'en' : cyr ? 'ru' : LOCALE.slice(0, 2);
+    /** The language of a text by its letters, told as TTS / STT MD Aloud tells it; null without letters. */
+    function detectLang(text) {
+      const sample = String(text || '').slice(0, 4000);
+      const cyr = (sample.match(/[а-яёіїєґ]/gi) || []).length;
+      const lat = (sample.match(/[a-z]/gi) || []).length;
+      if (!cyr && !lat) return null;
+      if (lat > cyr * 2) return 'en';
+      return /[іїєґ]/i.test(sample) ? 'uk' : 'ru';
+    }
+    let chatLang = null; // the language of the chat so far: a phrase with no words of its own follows it
+    /** Words long enough set the chat's language ("OK" or a file name don't). */
+    function noteLang(text) {
+      if ((String(text || '').match(/\p{L}/gu) || []).length >= 12) chatLang = detectLang(text) || chatLang;
+    }
+    /**
+     * The language to speak a phrase in (its voice and the words added around it): of its own words,
+     * else of the chat so far, else VS Code's. When no voice of TTS / STT MD Aloud speaks it: VS
+     * Code's language or English.
+     */
+    function speechLang(own) {
+      const want = detectLang(own) || chatLang || LANG;
+      const langs = useHost() && host.langs?.length ? host.langs : null;
+      return !langs ? want : [want, LANG, 'en'].find((l) => langs.includes(l)) || want;
     }
 
     /** Mostly Latin text is read by an English voice, everything else by the Russian one. */
@@ -3228,26 +3338,115 @@
     }
 
     // --- queue ---
-    const stopBtn = $('stopSpeech');
-    stopBtn.innerHTML = ICONS.speechStop;
-    stopBtn.onclick = () => { stopAll(); promptEl.focus({ preventScroll: true }); };
-    // The stop button and the pulsing speaker button both mean "the page is speaking".
-    function syncStopBtn() {
+    const said = []; // phrases already spoken or skipped: the player's "previous"
+    let held = false; // the player's pause
+    const remember = (item) => {
+      if (!item.text) return;
+      said.push({ cat: item.cat, text: item.text, lang: item.lang });
+      if (said.length > 200) said.shift();
+    };
+    const player = $('player'), prevBtn = $('playerPrev'), pauseBtn = $('playerPause'), playerStop = $('playerStop'), nextBtn = $('playerNext');
+    prevBtn.innerHTML = ICONS.prev;
+    playerStop.innerHTML = ICONS.stop;
+    nextBtn.innerHTML = ICONS.next;
+    const playerAct = (button, fn) => { button.onclick = () => { fn(); promptEl.focus({ preventScroll: true }); }; };
+    playerAct(prevBtn, stepBack);
+    playerAct(pauseBtn, () => (held ? resumeSpeech() : holdSpeech()));
+    playerAct(playerStop, stopAll);
+    playerAct(nextBtn, stepNext);
+    // The player and the pulsing speaker button both mean "the page is speaking".
+    function syncPlayer() {
       const speaking = !!current || queue.length > 0;
-      stopBtn.hidden = !speaking;
-      btn.classList.toggle('live', speaking);
+      player.hidden = !speaking;
+      btn.classList.toggle('live', speaking && !held);
+      prevBtn.disabled = !said.length;
+      nextBtn.disabled = !queue.some((q) => q.chime === undefined);
+      pauseBtn.innerHTML = held ? ICONS.play : ICONS.pause;
+      pauseBtn.title = held ? tl('Resume') : tl('Pause');
+      pauseBtn.setAttribute('aria-label', pauseBtn.title);
+    }
+
+    /** The player's pause. TTS / STT MD Aloud can't hold a phrase: it is said again from its start. */
+    function holdSpeech() {
+      const item = current;
+      if (!item || held) return;
+      held = true;
+      if (item.hostId && hostWaits.delete(item.hostId)) {
+        item.again = true;
+        toHost({ type: 'tts', op: 'stop' });
+      } else if (playing) playing.pause();
+      else if (supported && speechSynthesis.speaking) speechSynthesis.pause();
+      hearing.speaking(null);
+      hearing.resume();
+      syncPlayer();
+    }
+
+    function resumeSpeech() {
+      held = false;
+      const item = current;
+      if (!item) return pump();
+      hearing.pause();
+      hearing.speaking(item.text || null);
+      if (item.again) speakHost(item, item.finish);
+      else if (playing) playing.play().catch(() => {});
+      else if (supported) speechSynthesis.resume();
+      delete item.again;
+      syncPlayer();
+    }
+
+    /** Silences the phrase being spoken, to be said again later: nothing is reported about it. */
+    function hush(item) {
+      current = null;
+      hearing.speaking(null);
+      if (item.hostId && hostWaits.delete(item.hostId)) toHost({ type: 'tts', op: 'stop' });
+      if (playing) { playing.pause(); playing = null; }
+      if (supported) { speechSynthesis.resume(); speechSynthesis.cancel(); }
+    }
+
+    function stepBack() {
+      const before = said.pop();
+      if (!before) return;
+      held = false;
+      if (current) {
+        const item = current;
+        hush(item);
+        queue.unshift(item);
+      }
+      queue.unshift(before);
+      pump();
+    }
+
+    function stepNext() {
+      held = false;
+      if (current) {
+        remember(current);
+        cancelCurrent();
+      }
+      pump();
     }
 
     function pump() {
+      if (!current && !queue.length) held = false;
       renderMenu();
-      syncStopBtn();
-      if (current) return;
+      syncPlayer();
+      if (current || held) return;
       if (!queue.length) { hearing.resume(); return; }
       const item = (current = queue.shift());
+      syncPlayer();
+      delete item.again;
       item.onStart?.();
       hearing.pause();
       hearing.speaking(item.text || null);
-      const finish = () => { if (current === item) { current = null; hearing.speaking(null); item.onDone?.('spoken'); pump(); } };
+      // `run`: a phrase said again must not be ended by what its silenced utterance reports late.
+      const run = (item.run = (item.run || 0) + 1);
+      const finish = (item.finish = () => {
+        if (current !== item || item.run !== run) return;
+        current = null;
+        remember(item);
+        hearing.speaking(null);
+        item.onDone?.('spoken');
+        pump();
+      });
       if (item.chime !== undefined) {
         chime(item.chime);
         setTimeout(finish, 450);
@@ -3304,13 +3503,13 @@
         finish();
       });
       const next = queue.find((q) => q.chime === undefined && q.text);
-      toHost({ type: 'tts', op: 'speak', id, text: item.text, lang: langOf(item.text), next: next ? { text: next.text, lang: langOf(next.text) } : undefined });
+      toHost({ type: 'tts', op: 'speak', id, text: item.text, lang: item.lang || speechLang(item.text), next: next ? { text: next.text, lang: next.lang || speechLang(next.text) } : undefined });
     }
 
     function speakSystem(item, finish) {
       if (!supported) return finish();
       const u = new SpeechSynthesisUtterance(item.text);
-      const v = voiceFor(item.text);
+      const v = (item.lang === 'en' ? enVoice : item.lang ? ruVoice : null) || voiceFor(item.text);
       u.lang = v?.lang || LOCALE;
       if (v) u.voice = v;
       u.rate = rate;
@@ -3348,7 +3547,7 @@
       item.ctrl?.abort();
       if (item.hostId && hostWaits.delete(item.hostId)) toHost({ type: 'tts', op: 'stop' });
       if (playing) { playing.pause(); playing = null; }
-      if (supported) speechSynthesis.cancel();
+      if (supported) { speechSynthesis.resume(); speechSynthesis.cancel(); } // a paused synthesizer would hold the next phrase too
       item.onDone?.('interrupted');
     }
 
@@ -3368,6 +3567,7 @@
     }
 
     function stopAll() {
+      held = false;
       drop(() => true);
       cancelCurrent();
       pump();
@@ -3400,12 +3600,14 @@
 
     // --- texts ---
     /** Markdown answer -> plain speech: code blocks are named, not read; markup is dropped. */
-    function speakable(md, rest = ' ' + tl('The rest is in the answer text.')) {
+    function speakable(md, restKey = 'The rest is in the answer text.', limit = answerMaxChars) {
+      const lang = speechLang(md.replace(/```[\s\S]*?(```|$)/g, ' ').replace(/`[^`]+`/g, ' '));
+      const rest = ' ' + tlIn(lang, restKey);
       let t = md
-        .replace(/```[\s\S]*?(```|$)/g, ` (${tl('code fragment')}) `)
+        .replace(/```[\s\S]*?(```|$)/g, ` (${tlIn(lang, 'code fragment')}) `)
         .replace(/`([^`]+)`/g, '$1')
         .replace(/!?\[([^\]]*)\]\([^)]*\)/g, '$1')
-        .replace(/https?:\/\/\S+/g, tl('link'))
+        .replace(/https?:\/\/\S+/g, tlIn(lang, 'link'))
         // Paths: only the last name is worth hearing ("/Users/me/project/src" -> "src").
         // Segments must contain a letter, so dates like 29/09/2026 are left alone.
         .replace(/(?:~|\.{1,2})?\/?(?:[\w.@-]*[A-Za-z_][\w.@-]*\/){2,}[\w.@-]*/g, (m) => m.split('/').filter(Boolean).pop() || m)
@@ -3415,8 +3617,8 @@
         .replace(/[*_~]{1,3}([^*_~\n]+)[*_~]{1,3}/g, '$1')
         .replace(/\s+/g, ' ')
         .trim();
-      if (answerMaxChars && t.length > answerMaxChars) {
-        const cut = t.slice(0, answerMaxChars);
+      if (limit && t.length > limit) {
+        const cut = t.slice(0, limit);
         const end = Math.max(cut.lastIndexOf('. '), cut.lastIndexOf('! '), cut.lastIndexOf('? '));
         t = (end > 200 ? cut.slice(0, end + 1) : cut) + rest;
       }
@@ -3441,58 +3643,70 @@
      * name, dashes and underscores read as spaces; '' without a project (the phrases then go without it).
      */
     const projectName = () => baseName(String(cwd || '').replace(/\/+$/, '')).replace(/[-_]+/g, ' ').trim();
-    /** tl(withProject, name, ...args) when there is a project, else tl(without, ...args). */
-    const inProject = (withProject, without, ...args) => {
+    /** A phrase in `lang`: withProject (name, ...args) when there is a project, else without (...args). */
+    const inProject = (lang, withProject, without, ...args) => {
       const name = projectName();
-      return name ? tl(withProject, name, ...args) : tl(without, ...args);
+      return name ? tlIn(lang, withProject, name, ...args) : tlIn(lang, without, ...args);
     };
+    /** A block of text as queue items: its first phrase with the prefix, in that phrase's language. */
+    function prefixed(cat, text, withProject, without) {
+      noteLang(text);
+      const parts = chunks(text);
+      const lang = speechLang(parts[0]);
+      return parts.map((t, i) => (i ? { cat, text: t } : { cat, lang, text: inProject(lang, withProject, without, t) }));
+    }
+    const testPhrase = () => inProject(LANG, 'Allow in the project {0}: {1}', 'Your confirmation is needed: {0}', tlIn(LANG, 'run the command {0}', 'npm install')) + '. ' + tl('Version 2.1, port 3443.') + ' The build finished successfully.';
 
-    /** Short spoken description of what Claude wants to do (permission prompt). */
+    /**
+     * Short spoken description of what Claude wants to do (permission prompt): { text, lang }, in the
+     * language of Claude's own words about it (the command's description, the question).
+     */
     function describe(ev) {
       const input = ev.input || {};
+      const qs = input.questions || [];
+      const asking = ev.tool_name === 'AskUserQuestion';
+      const lang = speechLang(asking ? qs.map((q) => q.question).join(' ') : ev.tool_name === 'Bash' ? input.description : '');
+      if (asking) {
+        return { lang, text: (inProject(lang, 'Question on the project {0}:', 'Claude is asking a question.') + ' ' + qs.map((q) =>
+          `${q.question} ${tlIn(lang, 'Options: {0}.', (q.options || []).map((o) => o.label).join(', '))}`).join(' ')).slice(0, 400) +
+          // No command words in the phrase: with a misdetected output device its echo must not
+          // submit or skip the form (at most it adds text to a field, which stays visible).
+          (hearing.active ? ' ' + tlIn(lang, 'Dictate the answer.') : '') };
+      }
       let what;
       if (ev.tool_name === 'Bash') {
         const cmd = String(input.command || '').trim().split(/\s+/)[0] || '';
-        what = tl('run the command {0}', cmd) + (input.description ? `. ${input.description}` : '');
+        what = tlIn(lang, 'run the command {0}', cmd) + (input.description ? `. ${input.description}` : '');
       } else if (/^(Edit|Write|NotebookEdit)$/.test(ev.tool_name)) {
-        what = tl('change the file {0}', baseName(input.file_path || input.notebook_path));
-      } else if (ev.tool_name === 'AskUserQuestion') {
-        const qs = input.questions || [];
-        return (inProject('Question on the project {0}:', 'Claude is asking a question.') + ' ' + qs.map((q) =>
-          `${q.question} ${tl('Options: {0}.', (q.options || []).map((o) => o.label).join(', '))}`).join(' ')).slice(0, 400) +
-          // No command words in the phrase: with a misdetected output device its echo must not
-          // submit or skip the form (at most it adds text to a field, which stays visible).
-          (hearing.active ? ' ' + tl('Dictate the answer.') : '');
+        what = tlIn(lang, 'change the file {0}', baseName(input.file_path || input.notebook_path));
       } else if (ev.tool_name === 'WebFetch') {
         let host = '';
         try { host = new URL(input.url).hostname; } catch {}
-        what = tl('open the site {0}', host);
+        what = tlIn(lang, 'open the site {0}', host);
       } else {
-        what = tl('use the tool {0}', ev.tool_name.replace(/^mcp__/, '').replace(/__/g, ' '));
+        what = tlIn(lang, 'use the tool {0}', ev.tool_name.replace(/^mcp__/, '').replace(/__/g, ' '));
       }
       // No "разреш…" / "запрещ…" / "allow" / "deny" in anything spoken while the microphone listens
       // for the answer: it must not take the page's own words for one ("confirm" then).
-      return (hearing.active
-        ? inProject('Confirm in the project {0}: {1}', 'Your confirmation is needed: {0}', what)
-        : inProject('Allow in the project {0}: {1}', 'Your confirmation is needed: {0}', what)).slice(0, 200);
+      return { lang, text: inProject(lang, hearing.active ? 'Confirm in the project {0}: {1}' : 'Allow in the project {0}: {1}', 'Your confirmation is needed: {0}', what).slice(0, 200) };
     }
 
-    /** Short spoken description of a tool call that is starting. */
-    function describeTool(b) {
+    /** Short spoken description of a tool call that is starting, in `lang`. */
+    function describeTool(b, lang) {
       const input = b.input || {};
       switch (b.name) {
-        case 'Bash': return tl('Running the command {0}', String(input.command || '').trim().split(/\s+/)[0] || '');
-        case 'Read': return tl('Reading the file {0}', baseName(input.file_path));
-        case 'Edit': case 'Write': case 'NotebookEdit': return tl('Changing the file {0}', baseName(input.file_path || input.notebook_path));
-        case 'Grep': case 'Glob': return tl('Searching the files');
-        case 'WebSearch': return tl('Searching the web');
+        case 'Bash': return tlIn(lang, 'Running the command {0}', String(input.command || '').trim().split(/\s+/)[0] || '');
+        case 'Read': return tlIn(lang, 'Reading the file {0}', baseName(input.file_path));
+        case 'Edit': case 'Write': case 'NotebookEdit': return tlIn(lang, 'Changing the file {0}', baseName(input.file_path || input.notebook_path));
+        case 'Grep': case 'Glob': return tlIn(lang, 'Searching the files');
+        case 'WebSearch': return tlIn(lang, 'Searching the web');
         case 'WebFetch': {
           let host = '';
           try { host = new URL(input.url).hostname; } catch {}
-          return tl('Opening the site {0}', host);
+          return tlIn(lang, 'Opening the site {0}', host);
         }
-        case 'Agent': case 'Task': return tl('Starting a subagent') + (input.description ? `: ${input.description}` : '');
-        default: return tl('Using the tool {0}', b.name.replace(/^mcp__/, '').replace(/__/g, ' '));
+        case 'Agent': case 'Task': return tlIn(lang, 'Starting a subagent') + (input.description ? `: ${input.description}` : '');
+        default: return tlIn(lang, 'Using the tool {0}', b.name.replace(/^mcp__/, '').replace(/__/g, ' '));
       }
     }
 
@@ -3568,7 +3782,7 @@
         menu.appendChild(Object.assign(document.createElement('div'), { className: 'menu-note', textContent: tl('TTS / STT MD Aloud speaks: {0}', DRIVERS[driver] || driver.replace(/^external:/, '')) }));
         if (host.enabled) hostSettings();
         const test = Object.assign(document.createElement('button'), { type: 'button', className: 'menu-row', textContent: tl('▶ Test the voice'), disabled: !enabled || !host.enabled });
-        test.onclick = (e) => { e.stopPropagation(); enqueue([{ cat: 'test', text: inProject('Allow in the project {0}: {1}', 'Your confirmation is needed: {0}', tl('run the command {0}', 'npm install')) + '. ' + tl('Version 2.1, port 3443.') + ' The build finished successfully.' }]); };
+        test.onclick = (e) => { e.stopPropagation(); enqueue([{ cat: 'test', text: testPhrase() }]); };
         menu.appendChild(test);
         if (hostError) menu.appendChild(Object.assign(document.createElement('div'), { className: 'menu-note', textContent: '⚠️ ' + tl('TTS / STT MD Aloud: {0} — the system voice speaks for now', hostError) }));
         return;
@@ -3625,7 +3839,7 @@
       test.textContent = tl('▶ Test the voice');
       // stopPropagation: re-rendering detaches the button, and the outside-click handler would close the menu.
       test.onclick = (e) => { e.stopPropagation(); playTest(); };
-      const playTest = () => enqueue([{ cat: 'test', text: inProject('Allow in the project {0}: {1}', 'Your confirmation is needed: {0}', tl('run the command {0}', 'npm install')) + '. ' + tl('Version 2.1, port 3443.') + ' The build finished successfully.' }]);
+      const playTest = () => enqueue([{ cat: 'test', text: testPhrase() }]);
       menu.appendChild(test);
       if (engine === 'silero' && Date.now() < sileroDownUntil) {
         menu.appendChild(Object.assign(document.createElement('div'), {
@@ -3670,7 +3884,7 @@
       refreshMenu: renderMenu,
       /** The server offers the Silero voice (from /api/info). */
       setSilero(available) { sileroAvailable = !!available; renderMenu(); },
-      /** In VS Code: whether TTS / STT MD Aloud speaks, and its settings ({ available, enabled, driver }). */
+      /** In VS Code: whether TTS / STT MD Aloud speaks, and its settings ({ available, enabled, driver, langs }). */
       setHost(info) {
         const had = useHost();
         host = info || null;
@@ -3722,6 +3936,23 @@
         if (current?.cat === 'doc') cancelCurrent();
         pump();
       },
+      /** Whether a message can be read aloud now (the speech isn't off in TTS / STT MD Aloud). */
+      get canRead() { return supported && !(useHost() && !host.enabled); },
+      /** Reads a text from its start, whole, whatever the voice switches say: it was asked for. */
+      readNow(text) {
+        const spoken = speakable(text, undefined, 0);
+        if (!spoken) return;
+        held = false;
+        drop(() => true);
+        cancelCurrent();
+        enqueue(chunks(spoken).map((t) => ({ cat: 'read', text: t })));
+      },
+      /** A new chat: the phrases of the old one are no longer "previous". */
+      forget() { said.length = 0; syncPlayer(); },
+      /** The user's words set the language of the phrases that have none of their own. */
+      noteLang,
+      /** A phrase of ours in the language of `own` (the words it is about), else of the chat so far. */
+      say: (key, own, ...args) => tlIn(speechLang(own), key, ...args),
       /** Speaks a phrase of category `cat`; `onDone('spoken' | 'skipped' | 'interrupted')`. */
       speak(cat, text, onDone) {
         if (!on(cat)) return setTimeout(() => onDone?.('skipped'), 0);
@@ -3735,12 +3966,13 @@
       permission(ev) {
         const arm = () => hearing.arm(ev.id);
         if (!on('permissions')) return arm();
-        const text = describe(ev) + (hearing.active && ev.tool_name !== 'AskUserQuestion' ? '. ' + tl('Answer by voice or with a button') : '');
+        const { lang, text: said } = describe(ev);
+        const text = said + (hearing.active && ev.tool_name !== 'AskUserQuestion' ? '. ' + tlIn(lang, 'Answer by voice or with a button') : '');
         // onDone: dropped or interrupted before it started (e.g. "Stop speech") — listen anyway.
-        enqueue([{ cat: 'permissions', permId: ev.id, text, onStart: arm, onDone: arm }]);
+        enqueue([{ cat: 'permissions', permId: ev.id, lang, text, onStart: arm, onDone: arm }]);
         reminders.set(ev.id, REMIND_AFTER_MS.map((ms) => setTimeout(() => {
           if (on('permissions') && !queue.some((q) => q.permId === ev.id)) {
-            enqueue([{ cat: 'permissions', permId: ev.id, text: inProject('Claude is still waiting for your answer on the project {0}', 'Claude is still waiting for your answer') }]);
+            enqueue([{ cat: 'permissions', permId: ev.id, lang, text: inProject(lang, 'Claude is still waiting for your answer on the project {0}', 'Claude is still waiting for your answer') }]);
           }
         }, ms)));
       },
@@ -3750,30 +3982,32 @@
       answer(md) {
         if (!on('answers')) return;
         const text = speakable(md);
-        if (text) enqueue(chunks(inProject('Regarding the project {0}: {1}', '{0}', text)).map((t) => ({ cat: 'answers', text: t })));
+        if (text) enqueue(prefixed('answers', text, 'Regarding the project {0}: {1}', '{0}'));
       },
       /** Whether a category is read aloud now (voice on, its switch on). */
       speaks: on,
       /** A finished thinking block (its summary), read before the answer that follows it. */
       thinking(md) {
         if (!on('thinking')) return;
-        const text = speakable(md, ' ' + tl('The rest is in the thinking block.'));
-        if (text) enqueue(chunks(inProject('Regarding the project {0}, I think: {1}', 'Thinking — {0}', text)).map((c) => ({ cat: 'thinking', text: c })));
+        const text = speakable(md, 'The rest is in the thinking block.');
+        if (text) enqueue(prefixed('thinking', text, 'Regarding the project {0}, I think: {1}', 'Thinking — {0}'));
       },
       /** A tool call of the main agent is starting; only the latest pending one is kept. */
       tool(block) {
         if (!on('tools')) return;
         drop((q) => q.cat === 'tools');
-        enqueue([{ cat: 'tools', text: inProject('In the project {0}: {1}', '{0}', describeTool(block)) }]);
+        const lang = speechLang(/^(Agent|Task)$/.test(block.name) ? block.input?.description : '');
+        enqueue([{ cat: 'tools', lang, text: inProject(lang, 'In the project {0}: {1}', '{0}', describeTool(block, lang)) }]);
       },
       /** End of a run: a chime and a phrase ("all tasks done" or "finished with an error"). */
       finished({ failed }) {
         if (!on('done')) return;
+        const lang = speechLang('');
         enqueue([
           { cat: 'done', chime: failed },
-          { cat: 'done', text: failed
-            ? inProject('Work on the project {0} ended with an error', 'Claude finished with an error')
-            : inProject('All the tasks on the project {0} are complete', 'Done, all the tasks are complete') },
+          { cat: 'done', lang, text: failed
+            ? inProject(lang, 'Work on the project {0} ended with an error', 'Claude finished with an error')
+            : inProject(lang, 'All the tasks on the project {0} are complete', 'Done, all the tasks are complete') },
         ]);
       },
       resolved,
@@ -3894,7 +4128,7 @@
       if (!text || pending) return;
       const p = (pending = { cancelled: false, timer: null });
       show(tl('Sending: “{0}”', text), 'confirm');
-      voice.speak('sent', tl('Sending: {0}', text), (result) => {
+      voice.speak('sent', voice.say('Sending: {0}', text, text), (result) => {
         if (p.cancelled) return;
         if (result === 'interrupted') return cancel(tl('Not sent: a permission request interrupted the speech'));
         show(tl('Sending in {0} s — say “cancel”: “{1}”', (CANCEL_MS / 1000).toLocaleString(LOCALE), text), 'confirm');
@@ -4294,7 +4528,7 @@
       if (decision === 'always') alwaysAllowed.add(ev.tool_name);
       if (decision === 'deny' && ev.tool_use_id) deniedByUser.add(ev.tool_use_id);
       answerPermission(card, ev.id, decision !== 'deny');
-      voice.confirm(decision === 'deny' ? tl('Cancelled') : tl('OK, doing it'));
+      voice.confirm(voice.say(decision === 'deny' ? 'Cancelled' : 'OK, doing it', ''));
     });
     // After listen(): the prompt is listened for once its announcement starts.
     voice.permission(ev);
@@ -5045,6 +5279,7 @@
   }
 
   async function send(prompt, bubble, images = []) {
+    voice.noteLang(prompt);
     if (controller && runWaiting) return continueRun(prompt, bubble, images);
     if (!bubble) { bubble = el('div', 'msg user', prompt); decorateUserBubble(bubble, { images }); }
     toBottom();
@@ -5177,6 +5412,7 @@
 
   /** Sends a message into the process waiting for it (see turnDone). */
   async function continueRun(prompt, bubble, images = []) {
+    voice.noteLang(prompt);
     // "Continue from before a message" needs a new process (--fork-session).
     if (pendingFork) { await releaseRun(); return send(prompt, bubble, images); }
     if (!bubble) { bubble = el('div', 'msg user', prompt); decorateUserBubble(bubble, { images }); }
@@ -5510,6 +5746,7 @@
     alwaysAllowed.clear();
     asideHistory.length = 0;
     log.innerHTML = '';
+    voice.forget();
     compactNote.reset();
     pendingFork = null;
     sessionTitle = '';
@@ -5859,6 +6096,36 @@
     if (!node || node.querySelector(':scope > .msg-time')) return;
     node.appendChild(Object.assign(document.createElement('div'), { className: 'msg-time', textContent: fmtTime(ts) }));
   }
+
+  // --- a speaker on the message or thinking block under the pointer: reads that one aloud ---
+  (() => {
+    const BLOCK = '.msg.user, .msg.assistant, details.thinking';
+    const speak = Object.assign(document.createElement('button'), { type: 'button', id: 'msgSpeak', innerHTML: ICONS.speaker, title: tl('Read aloud') });
+    speak.setAttribute('aria-label', speak.title);
+    /** The block's text for speech: its words without buttons and code, a phrase to a line. */
+    function textOf(block) {
+      const copy = (block.matches('details.thinking') ? block.querySelector('.think-body') : block).cloneNode(true);
+      copy.querySelectorAll('button, img, .msg-time, .msg-actions, .msg-images, .queue-note, .queue-confirm, .aside-label').forEach((x) => x.remove());
+      copy.querySelectorAll('pre').forEach((x) => x.replaceWith('\n``` ```\n'));
+      copy.querySelectorAll('p, li, h1, h2, h3, h4, h5, h6, blockquote, tr, br, div').forEach((x) => x.after('\n'));
+      return copy.textContent.split('\n').map((l) => l.trim()).filter(Boolean)
+        .map((l) => (/[.!?…:;,]$|^```/.test(l) ? l : l + '.')).join(' ');
+    }
+    log.addEventListener('mouseover', (e) => {
+      const block = e.target.closest?.(BLOCK);
+      if (!block || !voice.canRead) return speak.remove();
+      // In a closed <details> only the summary shows.
+      const place = block.matches('details.thinking') ? block.querySelector(':scope > summary') : block;
+      // First in a message: a sticky element comes along only from its place at the top.
+      if (speak.parentElement !== place) { if (place === block) place.prepend(speak); else place.append(speak); }
+    });
+    log.addEventListener('mouseleave', () => speak.remove());
+    speak.onclick = (e) => {
+      e.preventDefault(); // not a click on the <summary>
+      e.stopPropagation();
+      voice.readNow(textOf(speak.closest(BLOCK)));
+    };
+  })();
 
   // --- user message bubbles: images, time, actions (rewind / continue from here) ---
   function decorateUserBubble(b, { uuid, ts, images } = {}) {
@@ -10311,7 +10578,7 @@
     const [gear, ...sound] = document.querySelectorAll('nav.activity .voice-wrap');
     const tools = Object.assign(document.createElement('span'), { className: 'head-tools' });
     tools.append(...sound, gear);
-    tools.querySelector('#micBtn').closest('.voice-wrap').hidden = true; // no speech recognition here yet (see hearing)
+    tools.querySelector('#micBtn').closest('.voice-wrap').hidden = true; // until TTS / STT MD Aloud is known to be there (hearing.setHost)
     $('mode').after(tools);
     // A menu of those buttons opens under its button, right-aligned; in a narrow panel (the block
     // wrapped to the left) it would stick out of the window: kept inside it.
@@ -10343,14 +10610,19 @@
       else if (m.type === 'newChat') $('newChat').click();
       else if (m.type === 'stop') stopRun();
       else if (m.type === 'finish' && busy()) askToFinish();
-      else if (m.type === 'ttsInfo') voice.setHost(m.info);
+      else if (m.type === 'ttsInfo') { voice.setHost(m.info); hearing.setHost(m.info); }
       else if (m.type === 'tts') voice.hostDone(m);
+      else if (m.type === 'stt') sttBackend.event(m);
+      else if (m.type === 'audioOut') audioOut.setDevice(m.device);
+      else if (m.type === 'windowFocus') hearing.setFocused(!!m.focused);
     });
     // The extension asks before switching the folder while Claude works (it follows `busy`) and
     // manages the MCP servers of the chat's live process (`runId`).
     const hostKey = () => `${busy()}|${liveRun()}`;
     let was = hostKey();
     setInterval(() => { if (hostKey() !== was) { was = hostKey(); renderMeta(); } }, 500);
+    // Headphones plugged in or taken off: looked at while something is, or may be, listened for.
+    setInterval(() => { if (document.visibilityState === 'visible' && hearing.wantsDevice) audioOut.detect(); }, 5000);
     toHost({ type: 'ready' });
   }
 </script>

@@ -16,7 +16,8 @@ No server process and no port: the wrapper's code runs inside the extension.
 
 Needs the `claude` CLI on the PATH. The chat's voice: the
 [TTS / STT MD Aloud](https://github.com/NineBitsLTD/tts-stt-md-aloud) extension when it is installed
-(its voice, speed and volume), otherwise the system voice.
+(its voice, speed and volume), otherwise the system voice. The microphone needs that extension
+with speech recognition turned on (Whisper).
 
 ## Running from source
 

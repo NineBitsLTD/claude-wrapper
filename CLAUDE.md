@@ -24,13 +24,16 @@ Claude Wrapper — a VS Code extension (macOS only) around a copy of Claude-AI's
   translation, the vendored Monaco/xterm, the built-in Python voice (tts-local) and the Swift speech
   recognition (stt). The chat's voice comes from the VS Code extension TTS / STT MD Aloud
   (`ninebits.tts-stt-md-aloud`, its API) when it is installed: its voice, speed and volume; without it
-  the page speaks with the system voice. Recognition will come from it too; until then the
-  microphone is hidden in VS Code.
+  the page speaks with the system voice. The microphone is its recording and Whisper recognition
+  (hidden without the extension, off while its STT is off); headphones or speakers come from macOS
+  (`system_profiler`, extension.js `defaultAudioOutput`), as the webview gets no device names.
 - `server/public/index.html` — the chat page. In the extension it is loaded right into the webview
   (extension.js chatHtml: a CSP with nonces, `window.CW` = { embed: 'vscode', cwd, lang }); there it
   hides everything but the chat column (VS Code has the explorer, editor, terminal) and moves the
-  voice/settings buttons into the chat head after the permission mode; its phrases go to the
-  extension, which has TTS / STT MD Aloud speak them (extension.js `aloud`).
+  voice/microphone/settings buttons into the chat head after the permission mode; its speech and
+  its microphone go through the extension to TTS / STT MD Aloud (extension.js `aloud`). While it
+  speaks, a player over the message box goes by phrases, pauses and stops; a speaker on the message
+  or thinking block under the pointer reads that one aloud.
 - `server/public/vscode-shim.js` — loaded first in the webview: the page's channel to the extension
   (`window.cwHost`) and its `fetch('/api/...')` bridge (messages to the extension, the answer streamed
   back), so the page's code works as it does over HTTP.
@@ -64,7 +67,9 @@ can be stopped.
   `package.nls.json` / `package.nls.ru.json`, `extension.js` through `vscode.l10n.t` with
   `l10n/bundle.l10n.ru.json`, the page through `tl()` / `tn()` with the dictionary in
   `server/public/i18n.js` (the language comes in `window.CW.lang`; static markup is translated by
-  `i18nDom`). The server's own messages are English; the page translates them with `tlMsg()`.
+  `i18nDom`). Spoken phrases and their project prefixes follow the language of the message, not the
+  UI's (`tlIn(lang, …)`, Russian and Ukrainian in the same file; a language without an entry falls
+  back to the UI's, then English). The server's own messages are English; the page translates them with `tlMsg()`.
   A new string needs its Russian entry in the matching file.
 - Code comments and docs in English.
 - Files start with a header comment describing their role — keep them current.

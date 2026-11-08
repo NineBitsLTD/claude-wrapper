@@ -21,9 +21,11 @@
  *   gives it { embed: 'vscode', cwd, lang }, public/vscode-shim.js its channel to this side and its
  *   fetch('/api/...') bridge (messages 'http' / 'httpAbort' / 'httpReset', answers streamed back).
  *   Other messages: page -> extension { source: 'claude-wrapper', type: 'ready' | 'state' |
- *   'mcp' | 'tts' | 'openFile' | 'showView' }, extension -> page { target: 'claude-wrapper', type:
- *   'setProject' | 'loadSession' | 'newChat' | 'stop' | 'finish' | 'tts' | 'ttsInfo' }. 'tts' is the
- *   chat's speech, spoken by the TTS / STT MD Aloud extension when it is installed (`aloud`); the
+ *   'mcp' | 'tts' | 'stt' | 'audioOut' | 'openFile' | 'showView' }, extension -> page { target:
+ *   'claude-wrapper', type: 'setProject' | 'loadSession' | 'newChat' | 'stop' | 'finish' | 'tts' |
+ *   'ttsInfo' | 'stt' | 'audioOut' | 'windowFocus' }. 'tts' is the chat's speech and 'stt' its
+ *   microphone, both through the TTS / STT MD Aloud extension when it is installed (`aloud`);
+ *   'audioOut' names the Mac's sound output (headphones or speakers, for listening while it speaks); the
  *   page's state carries `busy` (opening another folder while Claude works asks first,
  *   whenChatMayLeave) and `runId` (its live Claude process, whose MCP servers the side bar
  *   manages); 'mcp' is the servers a process reported at start.
@@ -38,6 +40,7 @@ const fs = require('fs');
 const path = require('path');
 const os = require('os');
 const crypto = require('crypto');
+const { execFile } = require('child_process');
 
 const POLL_MS = 3000;
 const PUBLIC_DIR = path.join(__dirname, 'server', 'public');
@@ -1084,10 +1087,29 @@ const TEXT_TYPE = /^(text\/|application\/(json|x-ndjson|javascript))/i;
  * with the voice, speed and volume of its settings (its API: tts.speak / stop, settings(),
  * onDidChangeSettings). The page asks with { type: 'tts', op: 'speak', id, text, lang, next } and
  * gets { type: 'tts', id, done } or { id, error }; 'stop' ends its phrase, 'settings' shows the
- * extension's side bar; { type: 'ttsInfo', info: { available, enabled, driver } } tells it whether
- * to use it (without it the page speaks with the system voice itself).
+ * extension's side bar; { type: 'ttsInfo', info: { available, enabled, driver, langs, stt: { enabled } } } tells
+ * it whether to use it (without it the page speaks with the system voice itself and has no
+ * microphone). The microphone: { type: 'stt', op: 'start', id } listens (ChatView.listen), answers
+ * { type: 'stt', id, event: 'ready' | 'result' | 'error' | 'end', text, error, message }; 'stop' ends it.
  */
 const ALOUD_ID = 'ninebits.tts-stt-md-aloud';
+/** The Mac's default sound output, { label } or null: the page tells headphones from speakers by it. */
+let audioQuery = null;
+function defaultAudioOutput() {
+  audioQuery ||= new Promise((resolve) => {
+    execFile('/usr/sbin/system_profiler', ['SPAudioDataType', '-json'], { timeout: 5000, maxBuffer: 8 * 1024 * 1024 }, (err, out) => {
+      audioQuery = null;
+      try {
+        const device = JSON.parse(out).SPAudioDataType.flatMap((group) => group._items || []).find((item) => item.coreaudio_default_audio_output_device === 'spaudio_yes');
+        resolve(device ? { label: device._name } : null);
+      } catch {
+        resolve(null);
+      }
+    });
+  });
+  return audioQuery;
+}
+
 const aloud = {
   api: null,
   watch: null,
@@ -1112,18 +1134,25 @@ const aloud = {
   async info() {
     const api = await this.get();
     if (!api) return { available: false };
-    let tts = {};
-    try { tts = api.settings?.()?.tts || {}; } catch {}
-    return { available: true, enabled: tts.enabled !== false, driver: tts.driver || 'system' };
+    let tts = {}, stt = {}, langs = [];
+    try { ({ tts = {}, stt = {} } = api.settings?.() || {}); } catch {}
+    // The languages its offered voices speak: a phrase in another one goes in VS Code's or English.
+    try { langs = [...new Set((await api.tts.voices()).map((v) => String(v.lang || '').slice(0, 2).toLowerCase()).filter(Boolean))]; } catch {}
+    return { available: true, enabled: tts.enabled !== false, driver: tts.driver || 'system', langs, stt: { enabled: stt.enabled === true } };
   },
   /** Ends the phrase it speaks for the chat (only the speech asked for through its API). */
   stop() {
     this.gen++;
     try { this.api?.tts.stop(); } catch {}
   },
+  /** Ends the recording made for the chat. */
+  stopMic() {
+    try { this.api?.stt?.stop(); } catch {}
+  },
   /** Installed, removed or updated: its API is asked for again. */
   reset() {
     this.stop();
+    this.stopMic();
     this.watch?.dispose();
     this.watch = null;
     this.api = null;
@@ -1139,12 +1168,13 @@ class ChatView {
     this.state = { cwd: null, sessionId: null, title: '', runId: null };
     this.onState = () => {};
     this.onMcp = () => {};
+    this.mic = null; // the page's listening under way: { id }
   }
   resolveWebviewView(view) {
     this.view = view;
     view.webview.options = { enableScripts: true, localResourceRoots: [vscode.Uri.file(PUBLIC_DIR)] };
     view.webview.onDidReceiveMessage((m) => this.fromPage(m));
-    view.onDidDispose(() => { this.endRequests(); aloud.stop(); this.view = null; this.ready = false; });
+    view.onDidDispose(() => { this.endRequests(); aloud.stop(); this.stopMic(); this.view = null; this.ready = false; });
     this.load();
   }
   load() {
@@ -1152,6 +1182,7 @@ class ChatView {
     this.ready = false;
     this.endRequests();
     aloud.stop();
+    this.stopMic();
     this.view.webview.html = chatHtml(this.view.webview);
   }
   /** Ends the page's open requests (a chat's run ends with its stream, as with a closed connection). */
@@ -1186,6 +1217,42 @@ class ChatView {
     });
     this.requests.set(id, handle);
   }
+  stopMic() {
+    if (!this.mic) return;
+    this.mic = null;
+    aloud.stopMic();
+  }
+  /**
+   * The page's microphone: TTS / STT MD Aloud records a phrase and recognizes it, again and again
+   * until the page stops it (a phrase stopped midway is dropped). A microphone taken by someone
+   * else (the side bar's test) is waited for; any other failure ends the listening with its reason.
+   */
+  async listen(id) {
+    this.stopMic();
+    const run = (this.mic = { id });
+    const send = (ev) => this.view?.webview.postMessage({ target: 'claude-wrapper', type: 'stt', id, ...ev });
+    const fail = (message) => send({ event: 'error', error: 'host', message });
+    const api = await aloud.get();
+    if (this.mic !== run) return;
+    if (!api?.stt) fail(t('the extension is not available'));
+    else send({ event: 'ready' });
+    while (api?.stt && this.mic === run) {
+      let heard;
+      try {
+        heard = await api.stt.record({ waitMs: 30000, maxMs: 60000, silenceMs: 1200 });
+      } catch (e) {
+        if (/busy/i.test(e.message)) { await new Promise((r) => setTimeout(r, 400)); continue; }
+        if (this.mic === run) fail(e.message || String(e));
+        break;
+      }
+      if (this.mic !== run) return;
+      const text = heard.text?.trim();
+      // Whisper names what isn't speech in brackets ("[BLANK_AUDIO]", "(music)"): not a phrase.
+      if (text && !/^[[(*♪].*[\])*♪]$/.test(text)) send({ event: 'result', text });
+      else if (heard.error) { fail(heard.error); break; }
+    }
+    if (this.mic === run) { this.mic = null; send({ event: 'end' }); }
+  }
   /** Whether TTS / STT MD Aloud speaks for the page, and its settings. */
   async postTtsInfo() {
     this.post({ type: 'ttsInfo', info: await aloud.info() });
@@ -1219,8 +1286,14 @@ class ChatView {
       this.ready = true;
       for (const q of this.queue.splice(0)) this.post(q);
       this.postTtsInfo();
+      this.post({ type: 'windowFocus', focused: vscode.window.state.focused });
     } else if (m.type === 'tts') {
       this.speech(m);
+    } else if (m.type === 'stt') {
+      if (m.op === 'stop') this.stopMic();
+      else if (m.op === 'start') this.listen(m.id);
+    } else if (m.type === 'audioOut') {
+      defaultAudioOutput().then((device) => this.post({ type: 'audioOut', device }));
     } else if (m.type === 'state') {
       this.state = { cwd: m.cwd, sessionId: m.sessionId, title: m.title, busy: !!m.busy, runId: m.runId || null };
       this.onState();
@@ -1348,6 +1421,7 @@ function activate(context) {
   // The chat's voice: TTS / STT MD Aloud's settings changed, or it was installed / removed.
   aloud.onChange = () => chat.postTtsInfo();
   context.subscriptions.push(vscode.extensions.onDidChange(() => { aloud.reset(); chat.postTtsInfo(); }), { dispose: () => aloud.reset() });
+  context.subscriptions.push(vscode.window.onDidChangeWindowState((state) => chat.post({ type: 'windowFocus', focused: state.focused })));
 
   historyView = new HistoryView();
   processesView = new ProcessesView();
@@ -1386,6 +1460,7 @@ function activate(context) {
 function deactivate() {
   // The window goes: its chats' claude runs end (as when their page closed), the registry is saved.
   aloud.stop();
+  chat?.stopMic();
   server?.stop();
 }
 

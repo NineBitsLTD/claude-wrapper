@@ -8,6 +8,8 @@
  *
  * - tl(text, ...args): the translation of `text` (itself when there is none), with {0}, {1}…
  *   replaced by the arguments.
+ * - tlIn(lang, text, ...args): the same in a given language, whatever the UI's — for spoken phrases,
+ *   which follow the language of the message: that language's entry, else the UI's, else English.
  * - tlMsg(message): a message from elsewhere (the server's errors are English): the exact entry,
  *   else the first entry with {0}… whose pattern matches it, else the message as is.
  * - tn(n, 'one|other'): a plural form with {0} = n; the Russian entry has three forms
@@ -947,14 +949,67 @@ const I18N_RU = {
   "Thinking — {0}": "Думаю — {0}",
   "In the project {0}: {1}": "В проекте {0}: {1}",
   "Work on the project {0} ended with an error": "Работа по проекту {0} завершилась с ошибкой",
-  "All the tasks on the project {0} are complete": "Все задачи по проекту {0} завершены"
+  "All the tasks on the project {0} are complete": "Все задачи по проекту {0} завершены",
+  "Speech recognition is turned off in TTS / STT MD Aloud": "Распознавание речи выключено в TTS / STT MD Aloud",
+  "Recognition settings…": "Настройки распознавания…",
+  "Speech player": "Плеер озвучки"
+};
+
+// The spoken phrases in Ukrainian (a message can be in a language other than the UI's: tlIn).
+const I18N_UK = {
+  "Sending: {0}": "Надсилаю: {0}",
+  "Cancelled": "Скасовано",
+  "OK, doing it": "Добре, виконую",
+  "Allow in the project {0}: {1}": "Дозвольте в проєкті {0}: {1}",
+  "Confirm in the project {0}: {1}": "Підтвердьте в проєкті {0}: {1}",
+  "Your confirmation is needed: {0}": "Потрібне ваше підтвердження: {0}",
+  "Question on the project {0}:": "Питання щодо проєкту {0}:",
+  "Claude is asking a question.": "Claude ставить запитання.",
+  "Options: {0}.": "Варіанти: {0}.",
+  "Dictate the answer.": "Продиктуйте відповідь голосом.",
+  "Answer by voice or with a button": "Дайте відповідь голосом або кнопкою",
+  "Claude is still waiting for your answer on the project {0}": "Claude все ще чекає на вашу відповідь щодо проєкту {0}",
+  "Claude is still waiting for your answer": "Claude все ще чекає на вашу відповідь",
+  "Regarding the project {0}: {1}": "Щодо проєкту {0}: {1}",
+  "Regarding the project {0}, I think: {1}": "Щодо проєкту {0} думаю: {1}",
+  "Thinking — {0}": "Думаю — {0}",
+  "In the project {0}: {1}": "У проєкті {0}: {1}",
+  "All the tasks on the project {0} are complete": "Усі завдання щодо проєкту {0} завершено",
+  "Done, all the tasks are complete": "Готово, усі завдання виконано",
+  "Work on the project {0} ended with an error": "Робота над проєктом {0} завершилася з помилкою",
+  "Claude finished with an error": "Claude завершив роботу з помилкою",
+  "run the command {0}": "виконати команду {0}",
+  "change the file {0}": "змінити файл {0}",
+  "open the site {0}": "відкрити сайт {0}",
+  "use the tool {0}": "використати інструмент {0}",
+  "Running the command {0}": "Виконую команду {0}",
+  "Reading the file {0}": "Читаю файл {0}",
+  "Changing the file {0}": "Змінюю файл {0}",
+  "Searching the files": "Шукаю у файлах",
+  "Searching the web": "Шукаю в інтернеті",
+  "Opening the site {0}": "Відкриваю сайт {0}",
+  "Starting a subagent": "Запускаю підагента",
+  "Using the tool {0}": "Використовую інструмент {0}",
+  "code fragment": "фрагмент коду",
+  "link": "посилання",
+  "The rest is in the answer text.": "Далі — у тексті відповіді.",
+  "The rest is in the thinking block.": "Далі — у блоці роздумів."
 };
 
 const I18N = LANG === 'ru' ? I18N_RU : {};
 
+const fillIn = (s, args) => (args.length ? s.replace(/\{(\d+)\}/g, (m, i) => (i < args.length ? String(args[i]) : m)) : s);
+const hasEntry = (dict, text) => !!dict && Object.prototype.hasOwnProperty.call(dict, text);
+
 function tl(text, ...args) {
-  const s = Object.prototype.hasOwnProperty.call(I18N, text) ? I18N[text] : text;
-  return args.length ? s.replace(/\{(\d+)\}/g, (m, i) => (i < args.length ? String(args[i]) : m)) : s;
+  return fillIn(hasEntry(I18N, text) ? I18N[text] : text, args);
+}
+
+const I18N_SPEECH = { ru: I18N_RU, uk: I18N_UK };
+function tlIn(lang, text, ...args) {
+  if (lang === 'en') return fillIn(text, args);
+  const dict = I18N_SPEECH[lang];
+  return fillIn(hasEntry(dict, text) ? dict[text] : hasEntry(I18N, text) ? I18N[text] : text, args);
 }
 
 let i18nPatterns = null;
