@@ -4024,11 +4024,24 @@
       },
       /** Whether a category is read aloud now (voice on, its switch on). */
       speaks: on,
-      /** A finished thinking block (its summary), read before the answer that follows it. */
-      thinking(md) {
-        if (!on('thinking')) return;
-        const text = speakable(md, 'The rest is in the thinking block.');
-        if (text) enqueue(prefixed('thinking', text, 'Regarding the project {0}, I think: {1}', 'Thinking — {0}'));
+      /**
+       * Reads one thinking block (its summary), given as one text or part by part, each part queued
+       * as soon as it is ready: the words about the project go with the first part, and the limit
+       * of a reading holds for the whole block.
+       */
+      thinkingReader() {
+        const REST = 'The rest is in the thinking block.';
+        let used = 0, over = false;
+        return (md) => {
+          if (over || !md?.trim() || !on('thinking')) return;
+          const first = !used;
+          const whole = speakable(md, REST, 0);
+          over = !!answerMaxChars && used + whole.length > answerMaxChars;
+          used += whole.length;
+          if (!first && over) return enqueue([{ cat: 'thinking', text: tlIn(speechLang(whole), REST) }]);
+          const text = first ? speakable(md, REST) : whole;
+          if (text) enqueue(first ? prefixed('thinking', text, 'Regarding the project {0}, I think: {1}', 'Thinking — {0}') : chunks(text).map((t) => ({ cat: 'thinking', text: t })));
+        };
       },
       /** A tool call of the main agent is starting; only the latest pending one is kept. */
       tool(block) {
@@ -4061,7 +4074,9 @@
    * original a click away, and the user's messages go to Claude in English (the original stays in
    * the bubble). The texts go to the extension (messages 'translate', extension.js `translator`).
    * Blocks are translated one after another, so that they are spoken in their order; a thinking
-   * block already as it comes in, one from history when it is opened (translations aren't stored).
+   * block already as it comes in; one from history when it is opened (translations aren't stored).
+   * A thinking block is read as it comes in too, with or without translation, each finished part
+   * queued for speech at once.
    * What can't be translated stays as it is, with the reason under it.
    */
   const translation = (() => {
@@ -4141,20 +4156,37 @@
      * A block still coming in, drawn in `body`: push() takes all of its text so far; its finished
      * sentences are translated meanwhile and the rest is shown as it came. The whole finished part
      * goes each time: the Translator remembers the sentences it has translated, and tells the
-     * language by more text. finish() resolves to the text to speak, in the block's turn.
+     * language by more text, so what it translated before stays the beginning of its answer. Each
+     * new finished part goes to `read` at once, translated or, without a translation, as it is, in
+     * the order of the blocks. finish() resolves, in the block's turn, to what is left to read.
      */
-    function stream(body, kind) {
+    function stream(body, kind, read) {
       let text = '', source = '', translated = '', closed = false, pumping = null;
+      let readOf = 0, readOfOriginal = 0; // how much of the translation, and of the text it is of, went to `read`
       const draw = () => { body.innerHTML = renderMarkdown(translated + text.slice(source.length)); };
+      /** What is new to read: of the translation, or of the text when there is none or the block began without one. */
+      function fresh(whole, translation) {
+        const asIs = !translation || (readOfOriginal && !readOf);
+        const out = asIs ? whole.slice(readOfOriginal) : translation.slice(readOf);
+        if (!asIs) readOf = translation.length;
+        readOfOriginal = whole.length;
+        return out;
+      }
       async function pump() {
-        while (!closed && active(kind) && body.isConnected) {
+        while (!closed && body.isConnected) {
           const part = finishedPart(text);
-          if (part.length <= source.length) return;
-          const r = await ask({ op: 'text', text: part, to: target() });
+          const translating = active(kind);
+          if (part.length <= (translating ? source.length : readOfOriginal)) return;
+          const r = translating ? await ask({ op: 'text', text: part, to: target() }) : {};
           if (r.error) { closed = true; return; } // finish() shows the reason
-          source = part;
-          translated = r.skipped || !r.text ? part : r.text;
-          draw();
+          if (translating) {
+            source = part;
+            translated = r.text || part;
+            draw();
+          }
+          if (closed) return; // after finish() it goes with the rest, in its turn
+          const next = fresh(part, r.text);
+          after(() => read(next));
         }
       }
       return {
@@ -4167,7 +4199,8 @@
           closed = true;
           return after(async () => {
             await pumping;
-            return translateBlock(body, text, kind, () => { body.innerHTML = renderMarkdown(text); });
+            const whole = await translateBlock(body, text, kind, () => { body.innerHTML = renderMarkdown(text); });
+            return fresh(text, whole === text ? '' : whole);
           });
         },
       };
@@ -5309,7 +5342,8 @@
   function startThinking(state) {
     clearInterval(state.thinkTimer);
     state.thinkEl = thinkingBlock();
-    state.thinkStream = translation.stream(state.thinkEl.querySelector('.think-body'), 'thinking');
+    state.thinkRead = voice.thinkingReader();
+    state.thinkStream = translation.stream(state.thinkEl.querySelector('.think-body'), 'thinking', state.thinkRead);
     Object.assign(state,{ think: '', thinkTokens: 0, thinkStarted: Date.now() });
     // The estimate comes in bursts with the summary's chunks: the time ticks on in between.
     state.thinkTimer = setInterval(() => { if (state.thinkEl?.isConnected) thinkingLabel(state, false); else clearInterval(state.thinkTimer); }, 1000);
@@ -5438,7 +5472,7 @@
           clearInterval(state.thinkTimer);
           // Without summaries a thinking block carries no text: nothing to show.
           if (!state.think.trim()) state.thinkEl.remove();
-          else { thinkingLabel(state, true); state.thinkStream.finish().then((t) => voice.thinking(t)); }
+          else { thinkingLabel(state, true); state.thinkStream.finish().then(state.thinkRead); }
           state.thinkEl = null;
           break;
         }

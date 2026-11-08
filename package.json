@@ -2,7 +2,7 @@
   "name": "claude-wrapper",
   "displayName": "Claude Wrapper",
   "description": "%description%",
-  "version": "1.8.0",
+  "version": "1.8.1",
   "publisher": "ninebits",
   "icon": "resources/icon.png",
   "license": "UNLICENSED",
