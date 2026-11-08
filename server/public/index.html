@@ -3436,6 +3436,16 @@
     }
 
     const baseName = (p) => String(p || '').split('/').pop();
+    /**
+     * The project's name in spoken phrases, so that it is clear which window speaks: its folder's
+     * name, dashes and underscores read as spaces; '' without a project (the phrases then go without it).
+     */
+    const projectName = () => baseName(String(cwd || '').replace(/\/+$/, '')).replace(/[-_]+/g, ' ').trim();
+    /** tl(withProject, name, ...args) when there is a project, else tl(without, ...args). */
+    const inProject = (withProject, without, ...args) => {
+      const name = projectName();
+      return name ? tl(withProject, name, ...args) : tl(without, ...args);
+    };
 
     /** Short spoken description of what Claude wants to do (permission prompt). */
     function describe(ev) {
@@ -3448,7 +3458,7 @@
         what = tl('change the file {0}', baseName(input.file_path || input.notebook_path));
       } else if (ev.tool_name === 'AskUserQuestion') {
         const qs = input.questions || [];
-        return (tl('Claude is asking a question.') + ' ' + qs.map((q) =>
+        return (inProject('Question on the project {0}:', 'Claude is asking a question.') + ' ' + qs.map((q) =>
           `${q.question} ${tl('Options: {0}.', (q.options || []).map((o) => o.label).join(', '))}`).join(' ')).slice(0, 400) +
           // No command words in the phrase: with a misdetected output device its echo must not
           // submit or skip the form (at most it adds text to a field, which stays visible).
@@ -3460,9 +3470,11 @@
       } else {
         what = tl('use the tool {0}', ev.tool_name.replace(/^mcp__/, '').replace(/__/g, ' '));
       }
-      // No "разреш…" / "запрещ…" / "allow" / "deny" in anything spoken while a prompt waits: the microphone is
-      // already listening and must not take the page's own words for an answer.
-      return tl('Your confirmation is needed: {0}', what).slice(0, 200);
+      // No "разреш…" / "запрещ…" / "allow" / "deny" in anything spoken while the microphone listens
+      // for the answer: it must not take the page's own words for one ("confirm" then).
+      return (hearing.active
+        ? inProject('Confirm in the project {0}: {1}', 'Your confirmation is needed: {0}', what)
+        : inProject('Allow in the project {0}: {1}', 'Your confirmation is needed: {0}', what)).slice(0, 200);
     }
 
     /** Short spoken description of a tool call that is starting. */
@@ -3556,7 +3568,7 @@
         menu.appendChild(Object.assign(document.createElement('div'), { className: 'menu-note', textContent: tl('TTS / STT MD Aloud speaks: {0}', DRIVERS[driver] || driver.replace(/^external:/, '')) }));
         if (host.enabled) hostSettings();
         const test = Object.assign(document.createElement('button'), { type: 'button', className: 'menu-row', textContent: tl('▶ Test the voice'), disabled: !enabled || !host.enabled });
-        test.onclick = (e) => { e.stopPropagation(); enqueue([{ cat: 'test', text: tl('Your confirmation is needed: {0}', tl('run the command {0}', 'npm install')) + '. ' + tl('Version 2.1, port 3443.') + ' The build finished successfully.' }]); };
+        test.onclick = (e) => { e.stopPropagation(); enqueue([{ cat: 'test', text: inProject('Allow in the project {0}: {1}', 'Your confirmation is needed: {0}', tl('run the command {0}', 'npm install')) + '. ' + tl('Version 2.1, port 3443.') + ' The build finished successfully.' }]); };
         menu.appendChild(test);
         if (hostError) menu.appendChild(Object.assign(document.createElement('div'), { className: 'menu-note', textContent: '⚠️ ' + tl('TTS / STT MD Aloud: {0} — the system voice speaks for now', hostError) }));
         return;
@@ -3613,7 +3625,7 @@
       test.textContent = tl('▶ Test the voice');
       // stopPropagation: re-rendering detaches the button, and the outside-click handler would close the menu.
       test.onclick = (e) => { e.stopPropagation(); playTest(); };
-      const playTest = () => enqueue([{ cat: 'test', text: tl('Your confirmation is needed: {0}', tl('run the command {0}', 'npm install')) + '. ' + tl('Version 2.1, port 3443.') + ' The build finished successfully.' }]);
+      const playTest = () => enqueue([{ cat: 'test', text: inProject('Allow in the project {0}: {1}', 'Your confirmation is needed: {0}', tl('run the command {0}', 'npm install')) + '. ' + tl('Version 2.1, port 3443.') + ' The build finished successfully.' }]);
       menu.appendChild(test);
       if (engine === 'silero' && Date.now() < sileroDownUntil) {
         menu.appendChild(Object.assign(document.createElement('div'), {
@@ -3728,7 +3740,7 @@
         enqueue([{ cat: 'permissions', permId: ev.id, text, onStart: arm, onDone: arm }]);
         reminders.set(ev.id, REMIND_AFTER_MS.map((ms) => setTimeout(() => {
           if (on('permissions') && !queue.some((q) => q.permId === ev.id)) {
-            enqueue([{ cat: 'permissions', permId: ev.id, text: tl('Claude is still waiting for your answer') }]);
+            enqueue([{ cat: 'permissions', permId: ev.id, text: inProject('Claude is still waiting for your answer on the project {0}', 'Claude is still waiting for your answer') }]);
           }
         }, ms)));
       },
@@ -3738,7 +3750,7 @@
       answer(md) {
         if (!on('answers')) return;
         const text = speakable(md);
-        if (text) enqueue(chunks(text).map((t) => ({ cat: 'answers', text: t })));
+        if (text) enqueue(chunks(inProject('Regarding the project {0}: {1}', '{0}', text)).map((t) => ({ cat: 'answers', text: t })));
       },
       /** Whether a category is read aloud now (voice on, its switch on). */
       speaks: on,
@@ -3746,20 +3758,22 @@
       thinking(md) {
         if (!on('thinking')) return;
         const text = speakable(md, ' ' + tl('The rest is in the thinking block.'));
-        if (text) enqueue(chunks(tl('Thinking — ') + text).map((c) => ({ cat: 'thinking', text: c })));
+        if (text) enqueue(chunks(inProject('Regarding the project {0}, I think: {1}', 'Thinking — {0}', text)).map((c) => ({ cat: 'thinking', text: c })));
       },
       /** A tool call of the main agent is starting; only the latest pending one is kept. */
       tool(block) {
         if (!on('tools')) return;
         drop((q) => q.cat === 'tools');
-        enqueue([{ cat: 'tools', text: describeTool(block) }]);
+        enqueue([{ cat: 'tools', text: inProject('In the project {0}: {1}', '{0}', describeTool(block)) }]);
       },
       /** End of a run: a chime and a phrase ("all tasks done" or "finished with an error"). */
       finished({ failed }) {
         if (!on('done')) return;
         enqueue([
           { cat: 'done', chime: failed },
-          { cat: 'done', text: failed ? tl('Claude finished with an error') : tl('Done, all the tasks are complete') },
+          { cat: 'done', text: failed
+            ? inProject('Work on the project {0} ended with an error', 'Claude finished with an error')
+            : inProject('All the tasks on the project {0} are complete', 'Done, all the tasks are complete') },
         ]);
       },
       resolved,

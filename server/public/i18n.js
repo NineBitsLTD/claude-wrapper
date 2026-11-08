@@ -937,7 +937,17 @@ const I18N_RU = {
   "system voices": "системные голоса",
   "TTS / STT MD Aloud speaks: {0}": "Озвучивает TTS / STT MD Aloud: {0}",
   "TTS / STT MD Aloud: {0} — the system voice speaks for now": "TTS / STT MD Aloud: {0} — пока читает системный голос",
-  "More voices (Piper, Silero): the TTS / STT MD Aloud extension": "Больше голосов (Piper, Silero) — в расширении TTS / STT MD Aloud"
+  "More voices (Piper, Silero): the TTS / STT MD Aloud extension": "Больше голосов (Piper, Silero) — в расширении TTS / STT MD Aloud",
+  "Question on the project {0}:": "Вопрос по проекту {0}:",
+  "Confirm in the project {0}: {1}": "Подтвердите в проекте {0}: {1}",
+  "Allow in the project {0}: {1}": "Разрешите в проекте {0}: {1}",
+  "Claude is still waiting for your answer on the project {0}": "Claude всё ещё ждёт вашего ответа по проекту {0}",
+  "Regarding the project {0}: {1}": "Относительно проекта {0}: {1}",
+  "Regarding the project {0}, I think: {1}": "Относительно проекта {0} думаю: {1}",
+  "Thinking — {0}": "Думаю — {0}",
+  "In the project {0}: {1}": "В проекте {0}: {1}",
+  "Work on the project {0} ended with an error": "Работа по проекту {0} завершилась с ошибкой",
+  "All the tasks on the project {0} are complete": "Все задачи по проекту {0} завершены"
 };
 
 const I18N = LANG === 'ru' ? I18N_RU : {};
