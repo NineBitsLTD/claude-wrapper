@@ -21,9 +21,10 @@
  *   gives it { embed: 'vscode', cwd, lang }, public/vscode-shim.js its channel to this side and its
  *   fetch('/api/...') bridge (messages 'http' / 'httpAbort' / 'httpReset', answers streamed back).
  *   Other messages: page -> extension { source: 'claude-wrapper', type: 'ready' | 'state' |
- *   'mcp' | 'tts' | 'stt' | 'audioOut' | 'openFile' | 'openImage' | 'showView' }, extension -> page { target:
+ *   'mcp' | 'tts' | 'stt' | 'translate' | 'audioOut' | 'openFile' | 'openImage' | 'showView' }, extension -> page { target:
  *   'claude-wrapper', type: 'setProject' | 'loadSession' | 'newChat' | 'stop' | 'finish' | 'tts' |
- *   'ttsInfo' | 'stt' | 'audioOut' | 'windowFocus' }. 'tts' is the chat's speech and 'stt' its
+ *   'ttsInfo' | 'stt' | 'translate' | 'translatorInfo' | 'audioOut' | 'windowFocus' }. 'translate' goes
+ *   through the Translator extension when it is installed (`translator`). 'tts' is the chat's speech and 'stt' its
  *   microphone, both through the TTS / STT Aloud extension when it is installed (`aloud`);
  *   'audioOut' names the Mac's sound output (headphones or speakers, for listening while it speaks); the
  *   page's state carries `busy` (opening another folder while Claude works asks first,
@@ -1095,6 +1096,60 @@ const TEXT_TYPE = /^(text\/|application\/(json|x-ndjson|javascript))/i;
  * { type: 'stt', id, event: 'ready' | 'result' | 'error' | 'end', text, error, message }; 'stop' ends it.
  */
 const ALOUD_ID = 'ninebits.tts-stt-aloud';
+/**
+ * The chat's translation: the Translator extension, when installed, translates on the device (its
+ * API: translate, detectLanguage, canTranslate, onDidChangeModels). The page asks with
+ * { type: 'translate', op: 'text', id, text, to } and gets { type: 'translate', id, text } or
+ * { skipped } (already in that language) or { error, code, from, to }; op 'languages' answers
+ * { languages }, 'models' shows its side bar; { type: 'translatorInfo', info: { available, uiLang } }
+ * tells the page whether to offer it. It is activated only when first needed.
+ */
+const TRANSLATOR_ID = 'ninebits.translator';
+const TRANSLATE_INTO = 'en ru uk de fr es it pt pl nl tr cs sk ro bg hr sr sl hu el fi sv da nb lt lv et he ar fa hi bn id vi th zh ja ko kk be ka hy az uz'.split(' ');
+const translator = {
+  api: null,
+  watch: null,
+  onChange: () => {},
+  info: () => ({ available: !!vscode.extensions.getExtension(TRANSLATOR_ID), uiLang: vscode.env.language.split('-')[0].toLowerCase() }),
+  async get() {
+    const ext = vscode.extensions.getExtension(TRANSLATOR_ID);
+    if (!ext) return (this.api = null);
+    if (!this.api) {
+      try {
+        this.api = ext.isActive ? ext.exports : await ext.activate();
+      } catch (e) {
+        console.warn(`[claude-wrapper] ${TRANSLATOR_ID}: ${e.message}`);
+        return null;
+      }
+      this.watch?.dispose();
+      this.watch = this.api?.onDidChangeModels?.(() => this.onChange()) || null;
+    }
+    return this.api?.translate ? this.api : null;
+  },
+  /** The languages the installed models can translate into. */
+  async languages() {
+    const api = await this.get();
+    if (!api) return [];
+    const can = async (to) => (await Promise.all((to === 'en' ? ['ru', 'uk'] : ['en']).map((from) => api.canTranslate(from, to).catch(() => false)))).some(Boolean);
+    const flags = await Promise.all(TRANSLATE_INTO.map(can));
+    return TRANSLATE_INTO.filter((_, i) => flags[i]);
+  },
+  /** { text } or { skipped }: the language of the text is told without its code, or code would decide it. */
+  async translate(text, to) {
+    const api = await this.get();
+    if (!api) throw new Error(t('the extension is not available'));
+    const prose = text.replace(/```[\s\S]*?(```|$)/g, ' ').replace(/`[^`\n]+`/g, ' ').trim();
+    const from = api.detectLanguage(prose || text);
+    if (from === to) return { skipped: true };
+    return { text: await api.translate(text, { from, to, markdown: true }) };
+  },
+  reset() {
+    this.watch?.dispose();
+    this.watch = null;
+    this.api = null;
+  },
+};
+
 const IMAGE_EXT = { 'image/png': 'png', 'image/jpeg': 'jpg', 'image/gif': 'gif', 'image/webp': 'webp', 'image/bmp': 'bmp' };
 
 /**
@@ -1283,6 +1338,21 @@ class ChatView {
     }
     if (this.mic === run) { this.mic = null; send({ event: 'end' }); }
   }
+  postTranslatorInfo() {
+    this.post({ type: 'translatorInfo', info: translator.info() });
+  }
+  /** The page's translation through the Translator extension (see `translator`). */
+  async translation(m) {
+    if (m.op === 'models') return vscode.commands.executeCommand('translator.panel.focus').then(undefined, () => {});
+    const reply = (r) => this.view?.webview.postMessage({ target: 'claude-wrapper', type: 'translate', id: m.id, ...r });
+    if (m.op === 'languages') return reply({ languages: await translator.languages().catch(() => []) });
+    if (m.op !== 'text' || typeof m.text !== 'string' || !/^[a-z]{2,3}$/.test(m.to || '')) return reply({ error: 'Bad request' });
+    try {
+      reply(await translator.translate(m.text, m.to));
+    } catch (e) {
+      reply({ error: e.message || String(e), code: e.code, from: e.from, to: e.to });
+    }
+  }
   /** Whether TTS / STT Aloud speaks for the page, and its settings. */
   async postTtsInfo() {
     this.post({ type: 'ttsInfo', info: await aloud.info() });
@@ -1321,9 +1391,12 @@ class ChatView {
       this.ready = true;
       for (const q of this.queue.splice(0)) this.post(q);
       this.postTtsInfo();
+      this.postTranslatorInfo();
       this.post({ type: 'windowFocus', focused: vscode.window.state.focused });
     } else if (m.type === 'tts') {
       this.speech(m);
+    } else if (m.type === 'translate') {
+      this.translation(m);
     } else if (m.type === 'stt') {
       if (m.op === 'stop') this.stopMic();
       else if (m.op === 'start') this.listen(m.id);
@@ -1457,7 +1530,8 @@ function activate(context) {
   context.subscriptions.push(vscode.window.registerWebviewViewProvider('claudeWrapper.chat', chat, { webviewOptions: { retainContextWhenHidden: true } }));
   // The chat's voice: TTS / STT Aloud's settings changed, or it was installed / removed.
   aloud.onChange = () => chat.postTtsInfo();
-  context.subscriptions.push(vscode.extensions.onDidChange(() => { aloud.reset(); chat.postTtsInfo(); }), { dispose: () => aloud.reset() });
+  context.subscriptions.push(vscode.extensions.onDidChange(() => { aloud.reset(); chat.postTtsInfo(); translator.reset(); chat.postTranslatorInfo(); }), { dispose: () => { aloud.reset(); translator.reset(); } });
+  translator.onChange = () => chat.postTranslatorInfo();
   context.subscriptions.push(vscode.window.onDidChangeWindowState((state) => chat.post({ type: 'windowFocus', focused: state.focused })));
 
   historyView = new HistoryView();

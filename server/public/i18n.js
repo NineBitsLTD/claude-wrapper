@@ -954,7 +954,21 @@ const I18N_RU = {
   "Recognition settings…": "Настройки распознавания…",
   "Speech player": "Плеер озвучки",
   "Continuing on the project {0}": "Продолжаю по проекту {0}",
-  "Continuing": "Продолжаю"
+  "Continuing": "Продолжаю",
+  "Translation": "Перевод",
+  "Language": "Язык",
+  "As in VS Code ({0})": "Как в VS Code ({0})",
+  "Incoming messages": "Входящие сообщения",
+  "My messages into English": "Мои сообщения — на английский",
+  "Translating…": "Перевожу…",
+  "Not translated: {0}": "Не переведено: {0}",
+  "no model translates from {0} to {1}": "нет модели для перевода: {0} → {1}",
+  "no answer from the Translator": "Translator не ответил",
+  "Translation models…": "Модели перевода…",
+  "No translation models yet": "Моделей перевода пока нет",
+  "Translation: {0}": "Перевод: {0}",
+  "Translation is off": "Перевод выключен",
+  "Claude gets: {0}": "Claude получит: {0}"
 };
 
 // Ukrainian: the UI, and the spoken phrases whatever the UI's language (tlIn).
@@ -1886,7 +1900,21 @@ const I18N_UK = {
   "Recognition settings…": "Налаштування розпізнавання…",
   "Speech player": "Програвач озвучення",
   "Continuing on the project {0}": "Продовжую щодо проєкту {0}",
-  "Continuing": "Продовжую"
+  "Continuing": "Продовжую",
+  "Translation": "Переклад",
+  "Language": "Мова",
+  "As in VS Code ({0})": "Як у VS Code ({0})",
+  "Incoming messages": "Вхідні повідомлення",
+  "My messages into English": "Мої повідомлення — англійською",
+  "Translating…": "Перекладаю…",
+  "Not translated: {0}": "Не перекладено: {0}",
+  "no model translates from {0} to {1}": "немає моделі для перекладу: {0} → {1}",
+  "no answer from the Translator": "Translator не відповів",
+  "Translation models…": "Моделі перекладу…",
+  "No translation models yet": "Моделей перекладу поки немає",
+  "Translation: {0}": "Переклад: {0}",
+  "Translation is off": "Переклад вимкнено",
+  "Claude gets: {0}": "Claude отримає: {0}"
 };
 
 const I18N_ALL = { ru: I18N_RU, uk: I18N_UK };

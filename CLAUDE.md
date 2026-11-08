@@ -38,6 +38,11 @@ Claude Wrapper — a VS Code extension (macOS only) around a copy of Claude-AI's
   speaks, a player over the message box goes by phrases, pauses and stops; a speaker on the message
   or thinking block under the pointer reads that one aloud. A click on an image of the chat or of
   the message being written opens it in VS Code's image viewer (a temporary file, extension.js `openImage`).
+  With the Translator extension (`ninebits.translator`, its API; extension.js `translator`) a button
+  before the speaker's turns translation on and chooses the language (VS Code's or one of the list):
+  Claude's messages and thinking are shown and spoken translated, the original a click away (the
+  thinking as it comes in, sentence by sentence; a block from history when it is opened); the
+  user's messages can go to Claude in English.
 - `server/public/vscode-shim.js` — loaded first in the webview: the page's channel to the extension
   (`window.cwHost`) and its `fetch('/api/...')` bridge (messages to the extension, the answer streamed
   back), so the page's code works as it does over HTTP.
