@@ -21,7 +21,7 @@
  *   gives it { embed: 'vscode', cwd, lang }, public/vscode-shim.js its channel to this side and its
  *   fetch('/api/...') bridge (messages 'http' / 'httpAbort' / 'httpReset', answers streamed back).
  *   Other messages: page -> extension { source: 'claude-wrapper', type: 'ready' | 'state' |
- *   'mcp' | 'tts' | 'stt' | 'audioOut' | 'openFile' | 'showView' }, extension -> page { target:
+ *   'mcp' | 'tts' | 'stt' | 'audioOut' | 'openFile' | 'openImage' | 'showView' }, extension -> page { target:
  *   'claude-wrapper', type: 'setProject' | 'loadSession' | 'newChat' | 'stop' | 'finish' | 'tts' |
  *   'ttsInfo' | 'stt' | 'audioOut' | 'windowFocus' }. 'tts' is the chat's speech and 'stt' its
  *   microphone, both through the TTS / STT Aloud extension when it is installed (`aloud`);
@@ -1095,6 +1095,25 @@ const TEXT_TYPE = /^(text\/|application\/(json|x-ndjson|javascript))/i;
  * { type: 'stt', id, event: 'ready' | 'result' | 'error' | 'end', text, error, message }; 'stop' ends it.
  */
 const ALOUD_ID = 'ninebits.tts-stt-aloud';
+const IMAGE_EXT = { 'image/png': 'png', 'image/jpeg': 'jpg', 'image/gif': 'gif', 'image/webp': 'webp', 'image/bmp': 'bmp' };
+
+/**
+ * An image of the chat in VS Code's image viewer: a data: URL written to a temporary file under
+ * its name (the title of the tab), in a folder named by its contents.
+ */
+async function openImage(name, dataUrl) {
+  const match = /^data:(image\/[a-z+.-]+)[^,]*;base64,(.+)$/s.exec(dataUrl);
+  const ext = match && IMAGE_EXT[match[1]];
+  if (!ext) throw new Error(t('not a picture'));
+  const data = Buffer.from(match[2], 'base64');
+  const base = path.basename(String(name || 'image')).replace(/\.[a-z0-9]{1,5}$/i, '').replace(/[^\p{L}\p{N} ._-]+/gu, '_').slice(0, 80) || 'image';
+  const dir = path.join(os.tmpdir(), 'claude-wrapper-images', crypto.createHash('sha1').update(data).digest('hex'));
+  const file = path.join(dir, `${base}.${ext}`);
+  await fs.promises.mkdir(dir, { recursive: true });
+  await fs.promises.writeFile(file, data);
+  await vscode.commands.executeCommand('vscode.open', vscode.Uri.file(file));
+}
+
 /** The Mac's default sound output, { label } or null: the page tells headphones from speakers by it. */
 let audioQuery = null;
 function defaultAudioOutput() {
@@ -1318,6 +1337,8 @@ class ChatView {
     } else if (m.type === 'showView' && ['processes', 'agents', 'history'].includes(m.view)) {
       // From the counts under the chat's input: the side bar shown, that section opened.
       vscode.commands.executeCommand('claudeWrapper.projects.focus').then(() => sidebar.expand(m.view));
+    } else if (m.type === 'openImage' && typeof m.dataUrl === 'string') {
+      openImage(m.name, m.dataUrl).catch((e) => vscode.window.showErrorMessage(t('Could not open the image: {0}', e.message)));
     } else if (m.type === 'openFile' && typeof m.path === 'string') {
       const uri = vscode.Uri.file(m.path);
       const opts = {};

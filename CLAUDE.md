@@ -36,7 +36,8 @@ Claude Wrapper — a VS Code extension (macOS only) around a copy of Claude-AI's
   voice/microphone/settings buttons into the chat head after the permission mode; its speech and
   its microphone go through the extension to TTS / STT Aloud (extension.js `aloud`). While it
   speaks, a player over the message box goes by phrases, pauses and stops; a speaker on the message
-  or thinking block under the pointer reads that one aloud.
+  or thinking block under the pointer reads that one aloud. A click on an image of the chat or of
+  the message being written opens it in VS Code's image viewer (a temporary file, extension.js `openImage`).
 - `server/public/vscode-shim.js` — loaded first in the webview: the page's channel to the extension
   (`window.cwHost`) and its `fetch('/api/...')` bridge (messages to the extension, the answer streamed
   back), so the page's code works as it does over HTTP.
@@ -72,7 +73,8 @@ can be stopped.
   `server/public/i18n.js` (the language comes in `window.CW.lang`; static markup is translated by
   `i18nDom`). Spoken phrases and their project prefixes follow the language of the message, not the
   UI's (`tlIn(lang, …)`, Russian and Ukrainian in the same file; a language without an entry falls
-  back to the UI's, then English). The server's own messages are English; the page translates them with `tlMsg()`.
+  back to the UI's, then English); a phrase with no words of its own (a command, a permission
+  request) follows the language of the user's messages. The server's own messages are English; the page translates them with `tlMsg()`.
   A new string needs its Russian and Ukrainian entries in the matching files.
 - Code comments and docs in English.
 - Files start with a header comment describing their role — keep them current.

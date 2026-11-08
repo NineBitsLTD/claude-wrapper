@@ -146,5 +146,7 @@
   "read-only": "лише читання",
   "tools: {0}": "інструментів: {0}",
   "user": "налаштування користувача",
-  "the extension is not available": "розширення недоступне"
+  "the extension is not available": "розширення недоступне",
+  "Could not open the image: {0}": "Не вдалося відкрити зображення: {0}",
+  "not a picture": "це не зображення"
 }

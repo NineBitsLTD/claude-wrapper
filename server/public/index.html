@@ -332,6 +332,7 @@
   html.embed .chat-head .act-btn { width: 28px; height: 28px; }
   /* VS Code's side bar is narrow and its text small: the whole page 20% smaller there. */
   html.embed { zoom: .8; }
+  html.embed .msg-images img, html.embed #attachments img, html.embed .tool-image { cursor: zoom-in; }
   /* VS Code's webview gives body a side padding by default. */
   html.embed body { padding: 0; }
   /* In VS Code the lists live in its side bar: under the input only how many, a click opens them there. */
@@ -2253,7 +2254,7 @@
   /** Draws history items at the end of the log. */
   function renderHistoryItems(items) {
     for (const it of items) {
-      if (it.role === 'user') decorateUserBubble(el('div', 'msg user', it.text), { uuid: it.uuid, ts: it.ts });
+      if (it.role === 'user') { voice.noteLang(it.text); decorateUserBubble(el('div', 'msg user', it.text), { uuid: it.uuid, ts: it.ts }); }
       else if (it.role === 'command') el('div', 'msg user', it.text);
       else if (it.role === 'assistant') { const a = el('div', 'msg assistant'); a.innerHTML = renderMarkdown(it.text); addTime(a, it.ts); }
       else if (it.role === 'thinking') thinkingBlock(it.text);
@@ -3321,10 +3322,15 @@
       if (lat > cyr * 2) return 'en';
       return /[іїєґ]/i.test(sample) ? 'uk' : 'ru';
     }
-    let chatLang = null; // the language of the chat so far: a phrase with no words of its own follows it
-    /** Words long enough set the chat's language ("OK" or a file name don't). */
+    // The language of the chat: a phrase with no words of its own follows it. The user's messages
+    // set it; Claude's answers only until there is one (its thinking and the descriptions of its
+    // commands are in English whatever the conversation's language).
+    let chatLang = null;
+    /** Latin letters need a phrase to tell the language ("OK" or a file name don't); others a word. */
     function noteLang(text) {
-      if ((String(text || '').match(/\p{L}/gu) || []).length >= 12) chatLang = detectLang(text) || chatLang;
+      const lang = detectLang(text);
+      const letters = (String(text || '').match(/\p{L}/gu) || []).length;
+      if (lang && letters >= (lang === 'en' ? 12 : 3)) chatLang = lang;
     }
     /**
      * The language to speak a phrase in (its voice and the words added around it): of its own words,
@@ -3674,7 +3680,7 @@
     };
     /** A block of text as queue items: its first phrase with the prefix, in that phrase's language. */
     function prefixed(cat, text, withProject, without) {
-      noteLang(text);
+      if (cat === 'answers' && !chatLang) noteLang(text);
       const parts = chunks(text);
       const lang = speechLang(parts[0]);
       return parts.map((t, i) => (i ? { cat, text: t } : { cat, lang, text: inProject(lang, withProject, without, t) }));
@@ -3683,13 +3689,14 @@
 
     /**
      * Short spoken description of what Claude wants to do (permission prompt): { text, lang }, in the
-     * language of Claude's own words about it (the command's description, the question).
+     * language of the question, or of the chat for anything else; a command's description only when
+     * it is in that language too (the voice would mangle it otherwise).
      */
     function describe(ev) {
       const input = ev.input || {};
       const qs = input.questions || [];
       const asking = ev.tool_name === 'AskUserQuestion';
-      const lang = speechLang(asking ? qs.map((q) => q.question).join(' ') : ev.tool_name === 'Bash' ? input.description : '');
+      const lang = speechLang(asking ? qs.map((q) => q.question).join(' ') : '');
       if (asking) {
         return { lang, text: (inProject(lang, 'Question on the project {0}:', 'Claude is asking a question.') + ' ' + qs.map((q) =>
           `${q.question} ${tlIn(lang, 'Options: {0}.', (q.options || []).map((o) => o.label).join(', '))}`).join(' ')).slice(0, 400) +
@@ -3700,7 +3707,7 @@
       let what;
       if (ev.tool_name === 'Bash') {
         const cmd = String(input.command || '').trim().split(/\s+/)[0] || '';
-        what = tlIn(lang, 'run the command {0}', cmd) + (input.description ? `. ${input.description}` : '');
+        what = tlIn(lang, 'run the command {0}', cmd) + (detectLang(input.description) === lang ? `. ${input.description}` : '');
       } else if (/^(Edit|Write|NotebookEdit)$/.test(ev.tool_name)) {
         what = tlIn(lang, 'change the file {0}', baseName(input.file_path || input.notebook_path));
       } else if (ev.tool_name === 'WebFetch') {
@@ -3729,7 +3736,7 @@
           try { host = new URL(input.url).hostname; } catch {}
           return tlIn(lang, 'Opening the site {0}', host);
         }
-        case 'Agent': case 'Task': return tlIn(lang, 'Starting a subagent') + (input.description ? `: ${input.description}` : '');
+        case 'Agent': case 'Task': return tlIn(lang, 'Starting a subagent') + (detectLang(input.description) === lang ? `: ${input.description}` : '');
         default: return tlIn(lang, 'Using the tool {0}', b.name.replace(/^mcp__/, '').replace(/__/g, ' '));
       }
     }
@@ -4020,7 +4027,7 @@
       tool(block) {
         if (!on('tools')) return;
         drop((q) => q.cat === 'tools');
-        const lang = speechLang(/^(Agent|Task)$/.test(block.name) ? block.input?.description : '');
+        const lang = speechLang('');
         enqueue([{ cat: 'tools', lang, text: inProject(lang, 'In the project {0}: {1}', '{0}', describeTool(block, lang)) }]);
       },
       /** End of a run: a chime and a phrase ("all tasks done" or "finished with an error"). */
@@ -4687,13 +4694,32 @@
     return `${st.name} (${dur})`;
   }
 
+  /**
+   * The running steps for a note: commands and subagents one by one, other tools by name with the
+   * time of the oldest. A response may hold dozens of calls ("Edit ×35 (53s)"): they come one after
+   * another as it is written and all run once it is over.
+   */
+  function stepLabels() {
+    const out = [];
+    const tools = new Map(); // name -> { st: its oldest step, count }
+    for (const st of runningSteps.values()) {
+      if (st.name === 'Agent' || st.name === 'Task' || st.name === 'Bash') { out.push(st); continue; }
+      const same = tools.get(st.name);
+      if (same) { same.count++; continue; }
+      const group = { st, count: 1 };
+      tools.set(st.name, group);
+      out.push(group);
+    }
+    return out.map((x) => (!x.st ? stepLabel(x) : x.count === 1 ? stepLabel(x.st) : `${x.st.name} ×${x.count} (${fmtDur(Date.now() - x.st.started)})`));
+  }
+
   /** Updates the notes of messages waiting in the running process (every second while any wait). */
   function renderQueueNotes() {
     clearInterval(queueTimer);
     queueTimer = null;
     if (!inFlight.length) return;
     queueTimer = setInterval(renderQueueNotes, 1000);
-    const steps = [...runningSteps.values()].map(stepLabel);
+    const steps = stepLabels();
     // Commands and subagents can go to the background (background_tasks): nothing is lost.
     const canBackground = [...runningSteps.values()].every((st) => BACKGROUNDABLE.has(st.name));
     for (const x of inFlight) {
@@ -10621,6 +10647,20 @@
     new MutationObserver((list) => { if (list.some((r) => r.attributeName !== 'style')) clampMenus(); })
       .observe(head, { attributes: true, subtree: true, attributeFilter: ['hidden', 'class', 'aria-expanded'] });
     window.addEventListener('resize', clampMenus);
+    // An image of the chat or of the message being written opens in VS Code's image viewer.
+    const openImage = async (e) => {
+      const img = e.target.closest?.('img');
+      if (!img || !/^(data|blob):/.test(img.src)) return;
+      const dataUrl = img.src.startsWith('data:') ? img.src : await new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(reader.result);
+        reader.onerror = reject;
+        fetch(img.src).then((r) => r.blob()).then((b) => reader.readAsDataURL(b), reject);
+      });
+      toHost({ type: 'openImage', name: img.alt || '', dataUrl });
+    };
+    log.addEventListener('click', openImage);
+    $('attachments').addEventListener('click', openImage);
     // Files open in VS Code's editor, not in the page's viewer.
     const abs = (p, root) => (p.startsWith('/') ? p : (root || cwd).replace(/\/$/, '') + '/' + p);
     viewer.open = (p, { root, line, col } = {}) => toHost({ type: 'openFile', path: abs(p, root), line, col });

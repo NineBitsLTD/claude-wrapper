@@ -146,5 +146,7 @@
   "read-only": "только чтение",
   "tools: {0}": "инструментов: {0}",
   "user": "настройки пользователя",
-  "the extension is not available": "расширение недоступно"
+  "the extension is not available": "расширение недоступно",
+  "Could not open the image: {0}": "Не удалось открыть картинку: {0}",
+  "not a picture": "это не картинка"
 }
