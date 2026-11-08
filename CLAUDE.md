@@ -25,7 +25,10 @@ Claude Wrapper — a VS Code extension (macOS only) around a copy of Claude-AI's
   recognition (stt). The chat's voice comes from the VS Code extension TTS / STT MD Aloud
   (`ninebits.tts-stt-md-aloud`, its API) when it is installed: its voice, speed and volume; without it
   the page speaks with the system voice. The microphone is its recording and Whisper recognition
-  (hidden without the extension, off while its STT is off); headphones or speakers come from macOS
+  (hidden without the extension, off while its STT is off); it queues the speaker and the microphone
+  among the windows, so the chat's phrases wait for their turn, by priority (questions and permission
+  requests first, then messages, then thinking; the same inside the chat's queue, voice `PRIORITY`);
+  headphones or speakers come from macOS
   (`system_profiler`, extension.js `defaultAudioOutput`), as the webview gets no device names.
 - `server/public/index.html` — the chat page. In the extension it is loaded right into the webview
   (extension.js chatHtml: a CSP with nonces, `window.CW` = { embed: 'vscode', cwd, lang }); there it

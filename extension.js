@@ -1085,8 +1085,10 @@ const TEXT_TYPE = /^(text\/|application\/(json|x-ndjson|javascript))/i;
 /**
  * The chat's voice: the TTS / STT MD Aloud extension, when installed, speaks the page's phrases
  * with the voice, speed and volume of its settings (its API: tts.speak / stop, settings(),
- * onDidChangeSettings). The page asks with { type: 'tts', op: 'speak', id, text, lang, next } and
- * gets { type: 'tts', id, done } or { id, error }; 'stop' ends its phrase, 'settings' shows the
+ * onDidChangeSettings). The page asks with { type: 'tts', op: 'speak', id, text, lang, priority,
+ * resumeText, resumeLang, next } and gets { type: 'tts', id, done } or { id, error }. It queues the
+ * speaker among the windows of VS Code: a phrase waits for its turn (`next` keeps the speaker for
+ * the phrase to come); a higher `priority` pauses one being played, which goes on after `resumeText`. 'stop' ends its phrase, 'settings' shows the
  * extension's side bar; { type: 'ttsInfo', info: { available, enabled, driver, langs, stt: { enabled } } } tells
  * it whether to use it (without it the page speaks with the system voice itself and has no
  * microphone). The microphone: { type: 'stt', op: 'start', id } listens (ChatView.listen), answers
@@ -1109,6 +1111,10 @@ function defaultAudioOutput() {
   });
   return audioQuery;
 }
+
+const MIC_WAIT_MS = 8000; // of silence, in one recording
+const MIC_TURN_MS = 300;  // TTS / STT MD Aloud's waiters look at the microphone every 100 ms and settle for 100 ms
+const micTurn = () => new Promise((resolve) => setTimeout(resolve, MIC_TURN_MS));
 
 const aloud = {
   api: null,
@@ -1224,8 +1230,11 @@ class ChatView {
   }
   /**
    * The page's microphone: TTS / STT MD Aloud records a phrase and recognizes it, again and again
-   * until the page stops it (a phrase stopped midway is dropped). A microphone taken by someone
-   * else (the side bar's test) is waited for; any other failure ends the listening with its reason.
+   * until the page stops it (a phrase stopped midway is dropped). The microphone is queued among
+   * the windows, so a recording holds it only for MIC_WAIT_MS of silence and it is left free for
+   * MIC_TURN_MS after each one: a window waiting for it gets its turn. A person taking it over
+   * (Dictate, Test microphone) ends a recording, which is no phrase then. Any failure but a busy
+   * microphone (TTS / STT MD Aloud before 1.5.0 rejects then) ends the listening with its reason.
    */
   async listen(id) {
     this.stopMic();
@@ -1239,17 +1248,19 @@ class ChatView {
     while (api?.stt && this.mic === run) {
       let heard;
       try {
-        heard = await api.stt.record({ waitMs: 30000, maxMs: 60000, silenceMs: 1200 });
+        heard = await api.stt.record({ waitMs: MIC_WAIT_MS, maxMs: 60000, silenceMs: 1200 });
       } catch (e) {
-        if (/busy/i.test(e.message)) { await new Promise((r) => setTimeout(r, 400)); continue; }
+        if (/busy/i.test(e.message)) { await micTurn(); continue; }
         if (this.mic === run) fail(e.message || String(e));
         break;
       }
       if (this.mic !== run) return;
-      const text = heard.text?.trim();
+      const interrupted = heard.ended === 'interrupted';
+      const text = interrupted ? '' : heard.text?.trim();
       // Whisper names what isn't speech in brackets ("[BLANK_AUDIO]", "(music)"): not a phrase.
       if (text && !/^[[(*♪].*[\])*♪]$/.test(text)) send({ event: 'result', text });
-      else if (heard.error) { fail(heard.error); break; }
+      else if (heard.error && !interrupted) { fail(heard.error); break; }
+      await micTurn();
     }
     if (this.mic === run) { this.mic = null; send({ event: 'end' }); }
   }
@@ -1272,7 +1283,12 @@ class ChatView {
     if (gen !== aloud.gen) return reply({ done: false }); // stopped while it was starting
     const next = m.next && typeof m.next.text === 'string' ? { text: m.next.text, lang: m.next.lang } : undefined;
     try {
-      reply({ done: await api.tts.speak(m.text, { lang: m.lang, ...(next ? { next } : {}) }) });
+      reply({ done: await api.tts.speak(m.text, {
+        lang: m.lang,
+        priority: [0, 1, 2].includes(m.priority) ? m.priority : 0,
+        ...(typeof m.resumeText === 'string' ? { resumeText: m.resumeText, resumeLang: m.resumeLang } : {}),
+        ...(next ? { next } : {}),
+      }) });
     } catch (e) {
       reply({ error: e.message || String(e) });
     }

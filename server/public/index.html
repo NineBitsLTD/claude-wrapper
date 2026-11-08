@@ -3228,9 +3228,9 @@
    * Speech output (Web Speech API, system voices — no network; in VS Code the TTS / STT MD Aloud
    * extension speaks when it is installed — its voice, speed and volume). Categories can be switched
    * separately in the 🔊 menu: permission prompts, Claude's answers, tool calls, end of work.
-   * Phrases go through one queue so they don't cut each other off; a permission prompt or question
-   * waits its turn too (nothing already queued is interrupted), and the microphone starts listening
-   * for its answer when its announcement starts. Through speakers recognition is paused while
+   * Phrases go through one queue, by priority (PRIORITY): a permission prompt or question comes
+   * first and pauses what is being read (its phrase is said again after it), messages go before
+   * thinking; the microphone starts listening for the answer when the announcement starts. Through speakers recognition is paused while
    * anything is spoken (the page's phrases contain "разреш…" / "allow"); in headphones it goes on.
    * While anything is spoken the player over the message box goes back and forth by phrases, pauses
    * and stops; a speaker on the message or thinking block under the pointer reads that one aloud.
@@ -3281,6 +3281,11 @@
     const hostWaits = new Map(); // phrase id -> its answer handler
     let hostSeq = 0;
     const useHost = () => !!host?.available;
+    // Who goes first, in this window's queue and among the windows (TTS / STT MD Aloud's levels):
+    // what waits for an answer, then messages and what a person asked to read, then the thinking
+    // and the announcements of commands.
+    const PRIORITY = { permissions: 2, answers: 1, read: 1, doc: 1, test: 1, done: 1, sent: 1, thinking: 0, tools: 0 };
+    const rank = (item) => PRIORITY[item.cat] ?? 0;
     let docPaused = false; // the file viewer's reading is paused (voice.pauseReading)
     // Speech rate for both voices: Silero audio plays faster/slower with its pitch kept
     // (playbackRate, applied at once, also to the phrase playing); the system voice reads at it
@@ -3503,7 +3508,15 @@
         finish();
       });
       const next = queue.find((q) => q.chime === undefined && q.text);
-      toHost({ type: 'tts', op: 'speak', id, text: item.text, lang: item.lang || speechLang(item.text), next: next ? { text: next.text, lang: next.lang || speechLang(next.text) } : undefined });
+      const lang = item.lang || speechLang(item.text);
+      toHost({
+        type: 'tts', op: 'speak', id, text: item.text, lang,
+        // TTS / STT MD Aloud queues the speaker among the windows: a higher level pauses a lower
+        // one being played elsewhere, which then says it goes on.
+        priority: rank(item),
+        resumeText: inProject(lang, 'Continuing on the project {0}', 'Continuing'), resumeLang: lang,
+        next: next ? { text: next.text, lang: next.lang || speechLang(next.text) } : undefined,
+      });
     }
 
     function speakSystem(item, finish) {
@@ -3560,9 +3573,19 @@
       }
     }
 
+    /** Into the queue by priority, first come first among equals; a higher one pauses the phrase being said. */
     function enqueue(items) {
       if (!items.length) return;
-      queue.push(...items);
+      for (const item of items) {
+        const at = queue.findIndex((q) => rank(q) < rank(item));
+        queue.splice(at < 0 ? queue.length : at, 0, item);
+      }
+      if (current && !held && current.chime === undefined && rank(queue[0]) > rank(current)) {
+        const item = current;
+        hush(item);
+        const at = queue.findIndex((q) => rank(q) <= rank(item)); // first again among its equals
+        queue.splice(at < 0 ? queue.length : at, 0, item);
+      }
       pump();
     }
 
@@ -3960,7 +3983,7 @@
       },
       closeMenu() { toggleMenu(false); },
       /**
-       * Announces a prompt after whatever is already queued. Voice answers to it are listened for
+       * Announces a prompt ahead of everything else. Voice answers to it are listened for
        * from the start of the announcement (hearing.arm), or at once if it isn't spoken.
        */
       permission(ev) {

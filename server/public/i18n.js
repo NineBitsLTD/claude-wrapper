@@ -952,11 +952,15 @@ const I18N_RU = {
   "All the tasks on the project {0} are complete": "Все задачи по проекту {0} завершены",
   "Speech recognition is turned off in TTS / STT MD Aloud": "Распознавание речи выключено в TTS / STT MD Aloud",
   "Recognition settings…": "Настройки распознавания…",
-  "Speech player": "Плеер озвучки"
+  "Speech player": "Плеер озвучки",
+  "Continuing on the project {0}": "Продолжаю по проекту {0}",
+  "Continuing": "Продолжаю"
 };
 
 // The spoken phrases in Ukrainian (a message can be in a language other than the UI's: tlIn).
 const I18N_UK = {
+  "Continuing on the project {0}": "Продовжую щодо проєкту {0}",
+  "Continuing": "Продовжую",
   "Sending: {0}": "Надсилаю: {0}",
   "Cancelled": "Скасовано",
   "OK, doing it": "Добре, виконую",
