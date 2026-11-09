@@ -7050,7 +7050,7 @@
 
   /** Tells Claude to wrap up: a message read between its steps; the turn then ends by itself. */
   function askToFinish() {
-    sendWhileRunning(tl('Please wrap up: finish the step you are on, don’t start anything new, and briefly sum up where things stand.'));
+    sendWhileRunning(tl('Finish the subagents’ work and your own, we’ll continue later.'));
   }
 
   async function confirmStop() {
