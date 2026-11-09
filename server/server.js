@@ -14,6 +14,8 @@
  *   requests to handleRequest through inproc.js — no HTTP, no port; the chat page in the webview
  *   reaches the routes through its fetch shim. Nothing process-wide is touched here (VS Code's
  *   extension host is shared with other extensions): no .env, no signal handlers, no env edits.
+ *   Its chats' claude processes are held outside the window (held-run.js, run-holder.js): a page
+ *   or a window that reloads finds them again through /api/chat/attach.
  * - Standalone, for working on the page in a browser:
  *     node server.js                  # http://127.0.0.1:3000, settings from .env in the data dir
  *     PORT=4000 CLAUDE_CWD=~/project node server.js
@@ -59,6 +61,7 @@ const { handleFsOp, handleUpload } = require('./fileops');
 const { handleSearch } = require('./search');
 const { readAudioTags, readAudioCover } = require('./audio-tags');
 const cliControl = require('./cli-control');
+const held = require('./held-run');
 const fileSearch = require('./file-search');
 
 const HOST = '127.0.0.1';
@@ -235,24 +238,27 @@ async function handleChat(req, res) {
   // CLAUDE_CODE_FORK_SUBAGENT=1 runs the main agent's subagents in the background, as the terminal,
   // the desktop app and VS Code do: messages typed meanwhile reach Claude between its tool calls.
   const env = { ...cliEnv(runId), ...(BACKGROUND_AGENTS ? { CLAUDE_CODE_FORK_SUBAGENT: '1' } : {}) };
-  const child = spawn(CLAUDE_BIN, args, { cwd, env, stdio: ['pipe', 'pipe', 'pipe'] });
-  child.stdin.on('error', () => {}); // EPIPE if the CLI exits while we write
+  // In the extension the process is held outside the window, so that it survives a reload of it.
+  // Should that fail, the chat still works: an ordinary child that ends with the window.
+  const sessionId = body.forkAt ? null : body.sessionId || null;
+  let child = null;
+  if (req.inproc || process.env.CLAUDE_WEB_HOLD_RUNS === '1') {
+    child = await held.spawn({ bin: CLAUDE_BIN, args, cwd, env, runId, sessionId, prompt: prompt.slice(0, 200) })
+      .catch((e) => { console.warn(`[chat] could not hold the run: ${e.message}`); return null; });
+  }
+  if (!child) {
+    child = spawn(CLAUDE_BIN, args, { cwd, env, stdio: ['pipe', 'pipe', 'pipe'] });
+    child.stdin.on('error', () => {}); // EPIPE if the CLI exits while we write
+  }
+  if (res.destroyed) { child.kill('SIGTERM'); return; } // stopped while it was starting
 
-  res.writeHead(200, {
-    'Content-Type': 'application/x-ndjson; charset=utf-8',
-    'Cache-Control': 'no-cache',
-    'X-Accel-Buffering': 'no',
-  });
+  res.writeHead(200, NDJSON_HEAD);
   // queued: user messages written to stdin that the CLI has not echoed back (replayed) yet.
   // agents: background subagents still working; idle: the last turn ended with a `result`;
   // waiting: idle with nothing left to do, kept open for the next message (wrapper_idle sent).
-  const run = { res, cwd, prompt: prompt.slice(0, 200), pending: new Map(), cliRequests: new Map(), child, queued: 0, agents: 0, idle: false, waiting: false, accepting: true, idleTimer: null, sessionId: body.forkAt ? null : body.sessionId || null };
-  cliControl.attach(run);
-  run.onCanUseTool = (request, requestId) => askPermission(run, request, requestId);
-  run.onElicitation = (request, requestId) => askElicitation(run, request, requestId);
-  run.onCancelRequest = (requestId) => run.pending.get(run.cliRequests.get(requestId))?.({ behavior: 'cancelled' });
-  runs.set(runId, run);
-  res.write(JSON.stringify({ type: 'wrapper_run', runId, pid: child.pid || null }) + '\n');
+  const run = newRun({ res: pageOutput(res), cwd, prompt: prompt.slice(0, 200), child, sessionId });
+  wireRun(run, runId);
+  run.res.write(JSON.stringify({ type: 'wrapper_run', runId, pid: child.pid || null }) + '\n');
   // The Agent SDK's handshake, sent before the message. perTaskStopAffordance: the page stops
   // single tasks itself (stop_task), so an interrupt only ends the turn and background agents keep
   // working. The answer carries the slash commands with descriptions, the model list and the
@@ -264,12 +270,10 @@ async function handleChat(req, res) {
     const commands = (Array.isArray(r.commands) ? r.commands : [])
       .filter((c) => c && typeof c.name === 'string')
       .map((c) => ({ name: c.name, description: c.description || '', argumentHint: c.argumentHint || '' }));
-    if (!res.writableEnded) {
-      res.write(JSON.stringify({
-        type: 'wrapper_init', commands, models: cliModels.list(), defaultModel: cliModels.defaultModel(),
-        outputStyle: r.output_style, outputStyles: Array.isArray(r.available_output_styles) ? r.available_output_styles : [],
-      }) + '\n');
-    }
+    run.res.write(JSON.stringify({
+      type: 'wrapper_init', commands, models: cliModels.list(), defaultModel: cliModels.defaultModel(),
+      outputStyle: r.output_style, outputStyles: Array.isArray(r.available_output_styles) ? r.available_output_styles : [],
+    }) + '\n');
   }, (e) => console.warn(`[chat] initialize: ${e.message}`));
   writeUserMessage(run, prompt, images.blocks);
 
@@ -279,12 +283,36 @@ async function handleChat(req, res) {
       .register(child.pid, { kind: 'claude', runId, cwd, prompt: prompt.slice(0, 200), sessionId: body.sessionId || null })
       .catch((e) => console.error('[processes] register failed:', e.message));
   }
+  followPage(run, res);
+  child.flow?.();
+}
 
-  if (child.pid) {
-    registry
-      .register(child.pid, { kind: 'claude', runId, cwd, prompt: prompt.slice(0, 200), sessionId: body.sessionId || null })
-      .catch((e) => console.error('[processes] register failed:', e.message));
-  }
+const NDJSON_HEAD = { 'Content-Type': 'application/x-ndjson; charset=utf-8', 'Cache-Control': 'no-cache', 'X-Accel-Buffering': 'no' };
+
+function newRun({ res, cwd, prompt, child, sessionId }) {
+  return { res, cwd, prompt, pending: new Map(), cliRequests: new Map(), open: new Map(), child, queued: 0, agents: 0, idle: false, waiting: false, idleUntil: 0, paused: false, accepting: true, idleTimer: null, sessionId };
+}
+
+/** Where a run's events go: the page following it, or nowhere while there is none. */
+function pageOutput(first) {
+  let page = first;
+  return {
+    get page() { return page; },
+    set page(res) { page = res; },
+    write(text) { if (page && !page.writableEnded) page.write(text); },
+    end() { page?.end(); },
+  };
+}
+
+/** Ties a run to its process: control traffic, events to the page, its end. */
+function wireRun(run, runId) {
+  const { child } = run;
+  run.id = runId;
+  cliControl.attach(run);
+  run.onCanUseTool = (request, requestId) => askPermission(run, request, requestId);
+  run.onElicitation = (request, requestId) => askElicitation(run, request, requestId);
+  run.onCancelRequest = (requestId) => run.pending.get(run.cliRequests.get(requestId))?.({ behavior: 'cancelled' });
+  runs.set(runId, run);
 
   // stdout is NDJSON: forwarded line by line, except the control traffic of run.control().
   const decoder = new StringDecoder('utf8');
@@ -300,11 +328,11 @@ async function handleChat(req, res) {
       try {
         ev = JSON.parse(line);
       } catch {
-        res.write(line + '\n');
+        run.res.write(line + '\n');
         continue;
       }
       if (cliControl.onEvent(run, ev)) continue;
-      res.write(line + '\n');
+      run.res.write(line + '\n');
       if (!sessionKnown && ev.session_id) {
         sessionKnown = true;
         run.sessionId = ev.session_id;
@@ -318,9 +346,15 @@ async function handleChat(req, res) {
   let stderr = '';
   child.stderr.on('data', (c) => (stderr += c.toString('utf8')));
 
+  // The machine slept: the holder stopped claude until it is awake with a network (run-holder.js).
+  child.on('paused', (on) => {
+    run.paused = on;
+    run.res.write(JSON.stringify({ type: on ? 'wrapper_paused' : 'wrapper_resumed' }) + '\n');
+  });
+
   child.on('error', (err) => {
-    res.write(JSON.stringify({ type: 'wrapper_error', message: `Failed to start "${CLAUDE_BIN}": ${err.message}` }) + '\n');
-    res.end();
+    run.res.write(JSON.stringify({ type: 'wrapper_error', message: `Failed to start "${CLAUDE_BIN}": ${err.message}` }) + '\n');
+    run.res.end();
   });
 
   child.on('close', (code) => {
@@ -329,19 +363,99 @@ async function handleChat(req, res) {
     // Show the chat in `claude --resume` of a terminal too (see sessions.markAsCli).
     if (run.sessionId) sessions.markAsCli(run.sessionId).catch((e) => console.warn(`markAsCli: ${e.message}`));
     if (code !== 0 && stderr.trim()) {
-      res.write(JSON.stringify({ type: 'wrapper_error', message: stderr.trim(), code }) + '\n');
+      run.res.write(JSON.stringify({ type: 'wrapper_error', message: stderr.trim(), code }) + '\n');
     }
-    res.end();
+    run.res.end();
+    if (!run.res.page) endRun(run); // no page is following it
   });
+}
 
-  // Client pressed "Stop" or closed the tab — deny open prompts and terminate the CLI process.
+/** The run is over, or its page stopped it: open prompts are denied, the process ends. */
+function endRun(run) {
+  clearTimeout(run.idleTimer);
+  run.accepting = false;
+  for (const resolve of run.pending.values()) resolve({ behavior: 'deny', message: 'Run was stopped by the user.' });
+  runs.delete(run.id);
+  if (run.child.exitCode === null) run.child.kill('SIGTERM');
+}
+
+/**
+ * `res` is the page following the run now. Its end stops the run ("Stop", a closed tab), unless the
+ * page is only being reloaded (res.detached, see inproc.js): a held run then works on without it.
+ */
+function followPage(run, res) {
   res.on('close', () => {
-    clearTimeout(run.idleTimer);
-    run.accepting = false;
-    for (const resolve of run.pending.values()) resolve({ behavior: 'deny', message: 'Run was stopped by the user.' });
-    runs.delete(runId);
-    if (child.exitCode === null) child.kill('SIGTERM');
+    if (run.res.page !== res) return; // another page has taken over
+    run.res.page = null;
+    if (!(res.detached && run.child.held && run.child.exitCode === null)) endRun(run);
   });
+}
+
+/** Takes over a run left by a window that was reloaded: its state from the holder, its events from now on. */
+const adopting = new Map();
+function adopt(record) {
+  if (!adopting.has(record.runId)) {
+    adopting.set(record.runId, (async () => {
+      const { child, state } = await held.connect(record);
+      const run = newRun({ res: pageOutput(null), cwd: record.cwd, prompt: record.prompt || '', child, sessionId: record.sessionId });
+      run.idle = !state.busy;
+      run.paused = !!state.paused;
+      wireRun(run, record.runId);
+      if (state.tasks) onCliEvent(run, JSON.parse(state.tasks));
+      for (const line of state.open) cliControl.onEvent(run, JSON.parse(line));
+      child.flow();
+      if (run.idle && run.agents === 0) waitForNext(run);
+      return run;
+    })().finally(() => adopting.delete(record.runId)));
+  }
+  return adopting.get(record.runId);
+}
+
+/** At the start of a window: its folders' runs, so that they go on even before its chat is shown. */
+function adoptRuns(cwds) {
+  for (const record of held.records()) {
+    if (cwds.includes(record.cwd)) adopt(record).catch((e) => console.warn(`[chat] could not take over a run: ${e.message}`));
+  }
+}
+
+/**
+ * A page that has just loaded asks for the live run of its session: { sessionId }. 404: there is
+ * none. Else the answer is the run's stream, as from /api/chat: first what is needed to catch up
+ * (the message being written; the finished ones are in the history), then its events as they come.
+ */
+async function handleChatAttach(req, res) {
+  let body;
+  try { body = await readJsonBody(req, 64 * 1024); } catch { return sendJson(res, 400, { error: 'Invalid JSON body' }); }
+  const live = (r) => r.sessionId === body.sessionId && r.child.held && r.child.exitCode === null;
+  let run = [...runs.values()].find(live);
+  if (!run && body.sessionId) {
+    const record = held.records().find((r) => r.sessionId === body.sessionId);
+    if (record) run = await adopt(record).catch((e) => { console.warn(`[chat] could not take over a run: ${e.message}`); return null; });
+  }
+  if (!run || !live(run)) return sendJson(res, 404, { error: 'No live run of this session' });
+  res.writeHead(200, NDJSON_HEAD);
+  run.child.state((state) => {
+    if (res.destroyed) return;
+    const line = (o) => res.write(JSON.stringify(o) + '\n');
+    const before = run.res.page;
+    run.res.page = res;
+    before?.end();
+    followPage(run, res);
+    line({ type: 'wrapper_run', runId: run.id, pid: run.child.pid || null });
+    line({ type: 'wrapper_replay', on: true });
+    for (const partial of state.partial) res.write(partial + '\n');
+    line({ type: 'wrapper_replay', on: false });
+    for (const prompt of run.open.values()) res.write(prompt);
+    if (run.paused) line({ type: 'wrapper_paused' });
+    if (run.waiting) line({ type: 'wrapper_idle', until: run.idleUntil, quiet: true });
+  });
+}
+
+/** A prompt for the page; kept until it is answered, for a page that comes back. */
+function showPrompt(run, id, event) {
+  const line = JSON.stringify(event) + '\n';
+  run.open.set(id, line);
+  run.res.write(line);
 }
 
 /** Writes a user message; returns its uuid (the CLI keeps it: replays name it, cancel_async_message takes it). */
@@ -364,11 +478,12 @@ function askElicitation(run, request, requestId) {
   return new Promise((resolve) => {
     run.pending.set(id, resolve);
     run.cliRequests.set(requestId, id);
-    run.res.write(JSON.stringify({
+    showPrompt(run, id, {
       type: 'elicitation_request', id, server: request.mcp_server_name, message: request.message, mode: request.mode || 'form',
       url: request.url, schema: request.requested_schema, order: request.property_order, title: request.title, description: request.description,
-    }) + '\n');
+    });
   }).then((d) => {
+    run.open.delete(id);
     run.pending.delete(id);
     run.cliRequests.delete(requestId);
     const action = ['accept', 'decline', 'cancel'].includes(d.action) ? d.action : d.behavior === 'cancelled' ? null : 'cancel';
@@ -403,12 +518,13 @@ function askPermission(run, request, requestId) {
   return new Promise((resolve) => {
     run.pending.set(id, resolve);
     run.cliRequests.set(requestId, id);
-    run.res.write(JSON.stringify({
+    showPrompt(run, id, {
       type: 'permission_request', id, tool_name: request.tool_name, input: request.input, tool_use_id: request.tool_use_id,
       agent_id: request.agent_id, title: request.title, description: request.description, reason: request.decision_reason,
       blocked_path: request.blocked_path, suggestions,
-    }) + '\n');
+    });
   }).then((decision) => {
+    run.open.delete(id);
     run.pending.delete(id);
     run.cliRequests.delete(requestId);
     run.res.write(JSON.stringify({ type: 'permission_resolved', id, behavior: decision.behavior }) + '\n');
@@ -435,8 +551,9 @@ function waitForNext(run) {
   clearTimeout(run.idleTimer);
   if (!IDLE_KEEP_MS || !run.accepting) return finishInput(run);
   run.waiting = true;
+  run.idleUntil = Date.now() + IDLE_KEEP_MS;
   run.idleTimer = setTimeout(() => finishInput(run), IDLE_KEEP_MS);
-  run.res.write(JSON.stringify({ type: 'wrapper_idle', until: Date.now() + IDLE_KEEP_MS }) + '\n');
+  run.res.write(JSON.stringify({ type: 'wrapper_idle', until: run.idleUntil }) + '\n');
 }
 
 /** Lets a waiting run in this session exit; resolves once its process is gone. */
@@ -1352,6 +1469,9 @@ async function route(req, res) {
   if (req.method === 'POST' && url.pathname === '/api/chat/finish') {
     return handleChatFinish(req, res);
   }
+  if (req.method === 'POST' && url.pathname === '/api/chat/attach') {
+    return handleChatAttach(req, res);
+  }
   if (req.method === 'POST' && url.pathname === '/api/chat') {
     return handleChat(req, res);
   }
@@ -1373,14 +1493,18 @@ function start() {
     .catch((e) => console.warn(`Model list: ${e.message} (using the CLI's cached catalog)`));
 }
 
-/** Ends what this process started for the chats (their pages are gone) and saves the registry. */
+/** This process goes: its chats' held runs wait for a window to come back, others end; the registry is saved. */
 function stop() {
-  for (const run of runs.values()) if (run.child.exitCode === null) run.child.kill('SIGTERM');
+  for (const run of runs.values()) {
+    if (run.child.exitCode !== null) continue;
+    if (run.child.held) run.child.disconnect();
+    else run.child.kill('SIGTERM');
+  }
   runs.clear();
   try { registry.stop(); } catch {}
 }
 
-module.exports = { start, stop, handleRequest, activeRuns: () => [...runs.values()].filter((r) => r.child.exitCode === null && !r.waiting).length };
+module.exports = { start, stop, handleRequest, adoptRuns, activeRuns: () => [...runs.values()].filter((r) => r.child.exitCode === null && !r.waiting).length };
 
 if (STANDALONE) {
   http.createServer(handleRequest).listen(PORT, HOST, () => {

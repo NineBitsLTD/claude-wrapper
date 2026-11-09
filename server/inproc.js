@@ -6,14 +6,15 @@
  * a sink — the chat webview's fetch shim (a streamed NDJSON chat answer included) or a JSON reader
  * for the extension's own calls.
  *
- *   const { abort } = request(handler, { method, url, headers, body }, { head(status, headers), chunk(buf), end() });
+ *   const { abort, detach } = request(handler, { method, url, headers, body }, { head(status, headers), chunk(buf), end() });
  *   const json = await call(handler, 'GET', '/api/projects');   // rejects with Error(message) + status
  */
 const { Readable, Writable } = require('stream');
 
 /**
  * Runs one request. `body`: a string, a Buffer / Uint8Array, or null. abort() ends the response as
- * a closed connection does (the chat route then ends its claude run).
+ * a closed connection does (the chat route then ends its claude run); detach() too, for a page that
+ * is only being reloaded (the run goes on and the page finds it again).
  */
 function request(handler, { method = 'GET', url, headers = {}, body = null }, sink) {
   const data = body == null ? [] : [typeof body === 'string' ? Buffer.from(body) : Buffer.from(body.buffer ? body : Object.values(body))];
@@ -50,7 +51,8 @@ function request(handler, { method = 'GET', url, headers = {}, body = null }, si
     flushHeaders: head,
   });
   handler(req, res);
-  return { abort: () => { if (!res.writableFinished) res.destroy(); } };
+  const abort = () => { if (!res.writableFinished) res.destroy(); };
+  return { abort, detach: () => { res.detached = true; abort(); } };
 }
 
 /** A request whose answer is JSON: resolves to it, or rejects with { message: its error, status }. */

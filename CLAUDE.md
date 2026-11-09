@@ -61,9 +61,17 @@ VS Code's extension host is shared with other extensions, so the server's code t
 process-wide there: no `.env`, no signal handlers, no `process.env` edits except `NINEBITS_DATA_DIR`
 (its data dir: the extension's global storage). claude and what it runs get `cleanEnv()`
 (server/processes.js): without `ELECTRON_RUN_AS_NODE`, `VSCODE_*`, `CLAUDECODE` / `CLAUDE_CODE_*` and
-the wrapper's own variables. Every window runs its own copy: its chats' claude runs (they end with
-their page or the window) and a process registry over the shared `<globalStorage>/.run/processes.json`
-(merged on write). Logs go to the extension host's log.
+the wrapper's own variables. Every window runs its own copy: its chats' claude runs and a process
+registry over the shared `<globalStorage>/.run/processes.json` (merged on write). Logs go to the
+extension host's log.
+
+A chat's claude runs outside the window, in a detached holder process of its own
+(`server/run-holder.js`, spoken to over a Unix socket through `server/held-run.js`, which looks like a
+ChildProcess to `server.js`). A reload of the page or of the window leaves it working: the new page
+asks `/api/chat/attach` for its session's run and gets the message being written and the open prompts,
+then the live events. Without any client for three minutes (a window really closed) the holder ends
+claude. When the machine slept (a late tick) the holder stops a working claude with SIGSTOP and lets it
+go on once the machine is fully awake and the API's host resolves; the page then hides the retries.
 
 The Processes list covers every Claude Code process on the machine, whoever started it: each one
 describes itself in `~/.claude/sessions/<pid>.json` (session, folder, name); `server/processes.js`

@@ -2343,6 +2343,7 @@
     refreshProcs();
     viewer.syncProject();
     toBottom(); // an opened session starts at its end
+    attachRun();
   }
 
   /**
@@ -5342,7 +5343,7 @@
   function startThinking(state) {
     clearInterval(state.thinkTimer);
     state.thinkEl = thinkingBlock();
-    state.thinkRead = voice.thinkingReader();
+    state.thinkRead = state.replaying ? () => {} : voice.thinkingReader(); // a page coming back: heard before
     state.thinkStream = translation.stream(state.thinkEl.querySelector('.think-body'), 'thinking', state.thinkRead);
     Object.assign(state,{ think: '', thinkTokens: 0, thinkStarted: Date.now() });
     // The estimate comes in bursts with the summary's chunks: the time ticks on in between.
@@ -5355,8 +5356,26 @@
     state.thinkEl.querySelector('summary').textContent = `💭 ${done ? tl('Thinking') : tl('Thinking…')} (${bits.join(' · ')})`;
   }
 
+  // After the machine has slept the old connection is gone and the CLI reconnects: nothing to report.
+  const WAKE_QUIET_MS = 120000;
+  let retriesQuietUntil = 0;
+
+  /** The machine slept and Claude waits for it to be awake with a network (run-holder.js). */
+  const pauseNote = (() => {
+    const SHOW_AFTER_MS = 3000; // usually it goes on at once
+    let node = null, timer = null;
+    return {
+      show() {
+        clearTimeout(timer);
+        timer = setTimeout(() => { node = el('div', 'status', '⏸ ' + tl('Claude is paused: the computer was asleep. It will go on when the network is back.')); }, SHOW_AFTER_MS);
+      },
+      hide() { clearTimeout(timer); node?.remove(); node = null; },
+    };
+  })();
+
   /** API errors the CLI retries (system api_retry): one status line per turn, updated in place. */
   function apiRetry(ev, state) {
+    if (!ev.error_status && Date.now() < retriesQuietUntil) return; // just woken up: it reconnects by itself
     const why = ev.error_status ? tl('error {0}', ev.error_status) : tl('no connection');
     const text = '⚠️ ' + tl('API: {0} — retry {1} of {2} in {3} s', why, ev.attempt, ev.max_retries, Math.max(1, Math.round((ev.retry_delay_ms || 0) / 1000)));
     if (state.retryNote?.isConnected) state.retryNote.textContent = text;
@@ -5556,7 +5575,18 @@
         break;
       }
       case 'wrapper_idle':
+        if (ev.quiet) state.announced = true; // nothing new: a page coming back to a waiting process
         turnDone(state, ev.until);
+        break;
+      case 'wrapper_replay': // a page coming back: the message being written so far
+        state.replaying = ev.on;
+        break;
+      case 'wrapper_paused':
+        pauseNote.show();
+        break;
+      case 'wrapper_resumed':
+        pauseNote.hide();
+        retriesQuietUntil = Date.now() + WAKE_QUIET_MS;
         break;
       case 'wrapper_error':
         state.failed = true;
@@ -5581,10 +5611,9 @@
       newSession: !sessionId || !!fork, firstPrompt: prompt };
     currentState = state;
     spinner.start();
-
-    try {
+    await followRun(async () => {
       const wire = await translation.outgoing(prompt, bubble);
-      const res = await fetch('/api/chat', {
+      return fetch('/api/chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -5595,6 +5624,35 @@
         }),
         signal: controller.signal,
       });
+    }, state, ended);
+  }
+
+  /**
+   * After a reload of the page or the window: back onto the session's Claude process if it still
+   * runs (it is held outside the window); the page then follows it as if it had started it.
+   */
+  async function attachRun() {
+    if (controller || !sessionId) return;
+    const ctrl = new AbortController();
+    const res = await fetch('/api/chat/attach', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ sessionId }), signal: ctrl.signal,
+    }).catch(() => null);
+    if (!res?.ok || controller) return; // no live run of this session
+    let ended;
+    runEnded = new Promise((resolve) => { ended = resolve; });
+    controller = ctrl;
+    updateSendBtn();
+    const state = { textEl: null, text: '', hadText: false, requestedMode: modeEl.value, permissionMode: null,
+      startedAt: Date.now(), failed: false, aborted: false, firstBubble: null, newSession: false, firstPrompt: '' };
+    currentState = state;
+    spinner.start();
+    await followRun(async () => res, state, ended);
+  }
+
+  /** Follows a run's stream (`start` resolves to it) to its end, then puts the page back to idle. */
+  async function followRun(start, state, ended) {
+    try {
+      const res = await start();
       if (!res.ok) throw new Error(tlMsg((await res.json().catch(() => ({}))).error || res.statusText));
 
       const reader = res.body.getReader();
@@ -5618,6 +5676,7 @@
     } finally {
       spinner.stop();
       compactNote.end();
+      pauseNote.hide();
       finishRunningTools();
       clearTasks();
       voice.clear();
@@ -5684,7 +5743,7 @@
     if (next) {
       setBubbleNote(next.bubble, null);
       if (!runLocalCommand(next.text, { echo: false })) send(next.text, next.bubble, next.images || []);
-    } else if (!state.aborted) {
+    } else if (!state.aborted && !state.announced) {
       announceFinished(state);
       state.announced = true;
     }

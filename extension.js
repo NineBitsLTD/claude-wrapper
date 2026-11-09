@@ -6,7 +6,8 @@
  *   process — startServer() requires server/server.js and its routes are called directly through
  *   server/inproc.js (getJson/postJson here, the chat page's fetch through its shim). Its data (the
  *   process registry, the shell journal) is in the extension's global storage, shared by the windows;
- *   each window has its own chats' claude runs, which end with their page or the window.
+ *   each window has its own chats' claude runs, held outside it (server/run-holder.js): a reload of
+ *   the page or the window finds them again, a window closed for good ends them after a few minutes.
  * - Activity bar "Projects": one webview view (Sidebar; a single view, so its title and the refresh
  *   button sit in the container's title bar). The projects are its main list (a click opens the
  *   folder in VS Code; a folder that is gone asks where the project went and moves its history;
@@ -73,6 +74,7 @@ function startServer(context) {
   server = require('./server/server.js');
   inproc = require('./server/inproc.js');
   server.start();
+  server.adoptRuns((vscode.workspace.workspaceFolders || []).map((f) => f.uri.fsPath));
 }
 
 const getJson = (p) => inproc.call(server.handleRequest, 'GET', p);
@@ -1265,9 +1267,9 @@ class ChatView {
     this.stopMic();
     this.view.webview.html = chatHtml(this.view.webview);
   }
-  /** Ends the page's open requests (a chat's run ends with its stream, as with a closed connection). */
+  /** The page is gone or reloading: its open requests end, a chat's run goes on without it. */
   endRequests() {
-    for (const r of this.requests.values()) r.abort();
+    for (const r of this.requests.values()) r.detach();
     this.requests.clear();
   }
   /** To the page, or queued until it says it is ready. */
@@ -1569,7 +1571,8 @@ function activate(context) {
 }
 
 function deactivate() {
-  // The window goes: its chats' claude runs end (as when their page closed), the registry is saved.
+  // The window goes: its chats' claude runs are held outside it and wait for it for a while (a
+  // reload comes back in seconds, a closed window never: run-holder.js), the registry is saved.
   aloud.stop();
   chat?.stopMic();
   server?.stop();
