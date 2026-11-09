@@ -11,37 +11,101 @@
  * `cwd` the entries record, decides which folder a project's sessions continue from: a dir renamed
  * after its project moved (relinkProject, or by hand) still records the old path. The entries' `cwd`
  * is used to undo the lossy encoding (projectCwd).
+ *
+ * A transcript can be close to a gigabyte, and the side bar asks for the list every few seconds
+ * while the running session's file grows. So the CLI's bookkeeping entries are not parsed at all,
+ * what has been read is not read again (a file only grows: the next read starts at the end of the
+ * last line read), one read of a file runs at a time, and what was read of big files (their
+ * summaries, the parsed history of the latest few) is kept in the data dir, for the next window.
  */
 
 const fs = require('fs');
 const fsp = require('fs/promises');
 const path = require('path');
 const os = require('os');
-const readline = require('readline');
+const { RUN_DIR } = require('./paths');
 
 const PROJECTS_DIR = path.join(os.homedir(), '.claude', 'projects');
 const PROMPT_HISTORY = path.join(os.homedir(), '.claude', 'history.jsonl'); // the CLI's ↑ history, `project` per line
 const CLI_CONFIG = path.join(os.homedir(), '.claude.json'); // `projects[<path>]`: trust, allowed tools, MCP servers
 const SESSION_FILE_RE = /^[0-9a-f-]{36}\.jsonl$/i;
 
-// Parsed-file caches keyed by absolute path; invalidated by mtime.
-const summaryCache = new Map();
 const projectCwdCache = new Map();
+
+// Entries of the CLI's own bookkeeping, often most of a transcript (the API requests it made).
+const BOOKKEEPING = ['api-request', 'queue-operation', 'pr-link', 'last-prompt'].map((t) => Buffer.from(`{"type":"${t}`));
+const READ_START = 64 * 1024;
+const READ_MAX = 4 * 1024 * 1024;
+const SAVE_MIN = 8 * 1024 * 1024; // a smaller file is read quickly enough
+const SAVE_DELAY_MS = 3000;
+const SAVED_HISTORIES = 5;
 
 function encodeProjectDir(cwd) {
   return cwd.replace(/[^a-zA-Z0-9]/g, '-');
 }
 
-async function* readJsonl(file) {
-  const rl = readline.createInterface({ input: fs.createReadStream(file, 'utf8'), crlfDelay: Infinity });
-  for await (const line of rl) {
-    if (!line) continue;
-    try {
-      yield JSON.parse(line);
-    } catch {
-      // Partially written last line or foreign format — skip.
+/**
+ * The entries of a JSONL file, from byte `from` on; a line not ended yet is left for the next read.
+ * skip(line): lines that aren't needed, told by their bytes, so they are not parsed. at.offset
+ * follows the end of the last line read.
+ */
+async function* readJsonl(file, { from = 0, skip = null, at = null } = {}) {
+  const fh = await fsp.open(file, 'r');
+  try {
+    let size = READ_START;
+    let chunk = Buffer.allocUnsafe(size);
+    let pos = from;
+    let parts = []; // the beginning of a line that goes on in the next chunk
+    for (;;) {
+      const { bytesRead } = await fh.read(chunk, 0, size, pos);
+      if (!bytesRead) return;
+      const buf = chunk.subarray(0, bytesRead);
+      let start = 0, nl;
+      while ((nl = buf.indexOf(10, start)) >= 0) {
+        const piece = buf.subarray(start, nl);
+        const line = parts.length ? Buffer.concat([...parts, piece]) : piece;
+        parts = [];
+        start = nl + 1;
+        if (at) at.offset = pos + start;
+        if (!line.length || BOOKKEEPING.some((b) => line.subarray(0, b.length).equals(b)) || skip?.(line)) continue;
+        let entry;
+        try {
+          entry = JSON.parse(line.toString('utf8'));
+        } catch {
+          continue; // a foreign format
+        }
+        yield entry;
+      }
+      if (start < bytesRead) parts.push(Buffer.from(buf.subarray(start))); // a copy: the chunk is used again
+      pos += bytesRead;
+      if (size < READ_MAX) {
+        size = Math.min(size * 2, READ_MAX);
+        chunk = Buffer.allocUnsafe(size);
+      }
     }
+  } finally {
+    await fh.close();
   }
+}
+
+/** Whether what was read up to `offset` is still there: that byte has to end a line. */
+async function continuesAt(file, offset) {
+  if (!offset) return false;
+  const fh = await fsp.open(file, 'r');
+  try {
+    const byte = Buffer.alloc(1);
+    await fh.read(byte, 0, 1, offset - 1);
+    return byte[0] === 10;
+  } finally {
+    await fh.close();
+  }
+}
+
+/** One read of a file at a time: who asks meanwhile gets the same answer. */
+const inFlight = new Map();
+function once(key, read) {
+  if (!inFlight.has(key)) inFlight.set(key, read().finally(() => inFlight.delete(key)));
+  return inFlight.get(key);
 }
 
 async function listSessionFiles(projectDir) {
@@ -89,38 +153,84 @@ function userText(entry) {
   return { kind: 'text', text };
 }
 
-async function summarizeSession(f) {
-  const cached = summaryCache.get(f.file);
-  if (cached && cached.mtimeMs === f.mtimeMs) return cached.summary;
+/**
+ * A line a summary doesn't need: an answer of Claude's or a tool's result (most of the volume). Only
+ * what is recognized for sure is skipped; in another key order a line is simply parsed.
+ */
+function noPromptIn(line) {
+  const head = line.subarray(0, 600);
+  if (head.includes('"type":"user"')) return head.includes('"tool_use_id"') || head.includes('"type":"tool_result"');
+  return head.includes('"type":"assistant"') || line.subarray(-700).includes('"type":"assistant"');
+}
 
-  let title = null, firstPrompt = null, lastPrompt = null, cwd = null, messages = 0, started = null;
-  for await (const e of readJsonl(f.file)) {
-    if (!cwd && e.cwd) cwd = e.cwd;
-    if (!started && e.timestamp) started = e.timestamp;
-    if (e.type === 'ai-title' && e.aiTitle) title = e.aiTitle;
-    if (e.type === 'custom-title' && e.customTitle) title = e.customTitle;
-    if (e.type === 'user') {
-      const u = userText(e);
-      if (u && u.kind !== 'stdout') {
-        messages++;
-        if (!firstPrompt) firstPrompt = u.text;
-        lastPrompt = u.text;
-      }
-    }
+// By absolute path: { mtimeMs, size, offset, state }. Those of big files are saved for the next window.
+const SUMMARY_FILE = path.join(RUN_DIR, 'session-summaries.json');
+let summaries = null;
+let summarySaveTimer = null;
+
+async function loadSummaries() {
+  if (!summaries) {
+    summaries = fsp.readFile(SUMMARY_FILE, 'utf8').then((t) => new Map(Object.entries(JSON.parse(t))), () => new Map());
   }
-  const summary = {
+  return summaries;
+}
+
+function saveSummariesSoon(cache) {
+  clearTimeout(summarySaveTimer);
+  summarySaveTimer = setTimeout(async () => {
+    const big = [...cache].filter(([, v]) => v.size >= SAVE_MIN);
+    const tmp = `${SUMMARY_FILE}.${process.pid}.tmp`;
+    try {
+      await fsp.mkdir(RUN_DIR, { recursive: true });
+      await fsp.writeFile(tmp, JSON.stringify(Object.fromEntries(big)), { mode: 0o600 });
+      await fsp.rename(tmp, SUMMARY_FILE);
+    } catch (e) {
+      console.warn(`[sessions] could not save the summaries: ${e.message}`);
+    }
+  }, SAVE_DELAY_MS);
+  summarySaveTimer.unref?.();
+}
+
+function summaryOf(f, s) {
+  return {
     id: f.id,
-    title: title || (firstPrompt || '').slice(0, 120) || '(no messages)',
-    firstPrompt: (firstPrompt || '').slice(0, 300),
-    lastPrompt: (lastPrompt || '').slice(0, 300),
-    messages,
-    cwd,
-    started,
+    title: s.title || (s.firstPrompt || '').slice(0, 120) || '(no messages)',
+    firstPrompt: s.firstPrompt || '',
+    lastPrompt: s.lastPrompt || '',
+    messages: s.messages,
+    cwd: s.cwd,
+    started: s.started,
     updated: new Date(f.mtimeMs).toISOString(),
     size: f.size,
   };
-  summaryCache.set(f.file, { mtimeMs: f.mtimeMs, summary });
-  return summary;
+}
+
+async function summarizeSession(f) {
+  const cache = await loadSummaries();
+  const known = cache.get(f.file);
+  if (known && known.mtimeMs === f.mtimeMs && known.size === f.size) return summaryOf(f, known.state);
+  return once(`summary:${f.file}`, async () => {
+    const grown = known && f.size > known.size && await continuesAt(f.file, known.offset);
+    const s = grown ? { ...known.state } : { title: null, firstPrompt: null, lastPrompt: null, cwd: null, messages: 0, started: null };
+    const at = { offset: grown ? known.offset : 0 };
+    for await (const e of readJsonl(f.file, { from: at.offset, skip: noPromptIn, at })) {
+      if (!s.cwd && e.cwd) s.cwd = e.cwd;
+      if (!s.started && e.timestamp) s.started = e.timestamp;
+      if (e.type === 'ai-title' && e.aiTitle) s.title = e.aiTitle;
+      if (e.type === 'custom-title' && e.customTitle) s.title = e.customTitle;
+      if (e.type === 'user') {
+        const u = userText(e);
+        if (u && u.kind !== 'stdout') {
+          s.messages++;
+          if (!s.firstPrompt) s.firstPrompt = u.text.slice(0, 300);
+          s.lastPrompt = u.text.slice(0, 300);
+        }
+      }
+    }
+    cache.set(f.file, { mtimeMs: f.mtimeMs, size: f.size, offset: at.offset, state: s });
+    if (f.size >= SAVE_MIN) saveSummariesSoon(cache);
+    return summaryOf(f, s);
+  });
 }
 
 /**
@@ -310,7 +420,9 @@ async function deleteSession(sessionId) {
   await fsp.rename(file, path.join(dest, path.basename(file)));
   const extra = file.slice(0, -'.jsonl'.length);
   if (await fsp.stat(extra).then((s) => s.isDirectory(), () => false)) await fsp.rename(extra, path.join(dest, sessionId));
-  summaryCache.delete(file);
+  (await loadSummaries()).delete(file);
+  historyCache.delete(file);
+  await fsp.rm(savedHistoryFile(file), { force: true }).catch(() => {});
   return true;
 }
 
@@ -323,7 +435,7 @@ async function deleteSession(sessionId) {
  * "automode-blocked"), taken from the entry's `toolDenialKind`.
  */
 const HISTORY_RESULT_MAX = 50_000; // characters of a tool result kept for the history view
-const historyCache = new Map();     // transcript -> { size, mtimeMs, history }
+const historyCache = new Map();     // transcript -> { size, mtimeMs, offset, history, tools }
 
 /**
  * A page of a session's history: the `limit` items before item `before` (default: its end), with
@@ -336,10 +448,19 @@ async function loadHistory(sessionId, { before, limit } = {}) {
   const st = await fsp.stat(file);
   let cached = historyCache.get(file);
   if (!cached || cached.size !== st.size || cached.mtimeMs !== st.mtimeMs) {
-    cached = { size: st.size, mtimeMs: st.mtimeMs, history: await parseHistory(sessionId, file) };
-    historyCache.delete(file);
-    historyCache.set(file, cached);
-    while (historyCache.size > 2) historyCache.delete(historyCache.keys().next().value);
+    cached = await once(`history:${file}`, async () => {
+      const prior = historyCache.get(file) || await loadSavedHistory(file);
+      let next = prior;
+      if (!prior || prior.size !== st.size || prior.mtimeMs !== st.mtimeMs) {
+        const grown = prior && st.size > prior.size && await continuesAt(file, prior.offset);
+        next = { size: st.size, mtimeMs: st.mtimeMs, ...await parseHistory(sessionId, file, grown ? prior : null) };
+        if (st.size >= SAVE_MIN) saveHistorySoon(file, next);
+      }
+      historyCache.delete(file);
+      historyCache.set(file, next);
+      while (historyCache.size > 2) historyCache.delete(historyCache.keys().next().value);
+      return next;
+    });
   }
   const h = cached.history;
   const total = h.items.length;
@@ -353,14 +474,58 @@ async function loadHistory(sessionId, { before, limit } = {}) {
   return { ...h, cwd, cwdExists: cwd ? await isDir(cwd) : false, projectDir, items: h.items.slice(start, end), total, start };
 }
 
-async function parseHistory(sessionId, file) {
-  const items = [];
-  const tools = new Map();
-  let cwd = null;
-  let title = null;
-  let usage = null; // usage of the last main-agent API message: the size of the context now
+const HISTORY_DIR = path.join(RUN_DIR, 'histories');
+const savedHistoryFile = (file) => path.join(HISTORY_DIR, path.basename(file, '.jsonl') + '.json');
 
-  for await (const e of readJsonl(file)) {
+async function loadSavedHistory(file) {
+  try {
+    const saved = JSON.parse(await fsp.readFile(savedHistoryFile(file), 'utf8'));
+    saved.tools = new Map(saved.history.items.filter((it) => it.role === 'tool').map((it) => [it.id, it]));
+    return saved;
+  } catch {
+    return null; // not saved, or a damaged file: read the transcript
+  }
+}
+
+/** The parsed history of a big transcript, for the next window; the latest few only. */
+const historySaves = new Map();
+function saveHistorySoon(file, entry) {
+  clearTimeout(historySaves.get(file));
+  const timer = setTimeout(async () => {
+    historySaves.delete(file);
+    const target = savedHistoryFile(file);
+    const tmp = `${target}.${process.pid}.tmp`;
+    try {
+      await fsp.mkdir(HISTORY_DIR, { recursive: true, mode: 0o700 });
+      const { size, mtimeMs, offset, history } = entry;
+      await fsp.writeFile(tmp, JSON.stringify({ size, mtimeMs, offset, history }), { mode: 0o600 });
+      await fsp.rename(tmp, target);
+      const all = await Promise.all((await fsp.readdir(HISTORY_DIR)).map(async (n) => {
+        const p = path.join(HISTORY_DIR, n);
+        return { p, tmp: n.endsWith('.tmp'), mtimeMs: (await fsp.stat(p)).mtimeMs };
+      }));
+      const saved = all.filter((f) => !f.tmp).sort((a, b) => b.mtimeMs - a.mtimeMs);
+      // What a window closed in the middle of writing has left behind goes too.
+      const stale = all.filter((f) => f.tmp && Date.now() - f.mtimeMs > 10 * 60000);
+      await Promise.all([...saved.slice(SAVED_HISTORIES), ...stale].map(({ p }) => fsp.rm(p, { force: true })));
+    } catch (e) {
+      console.warn(`[sessions] could not save a history: ${e.message}`);
+    }
+  }, SAVE_DELAY_MS);
+  timer.unref?.();
+  historySaves.set(file, timer);
+}
+
+/** Parses a transcript, or with `prior` (of parseHistory) what has been added to it since. */
+async function parseHistory(sessionId, file, prior = null) {
+  const items = prior?.history.items || [];
+  const tools = prior?.tools || new Map();
+  let cwd = prior?.history.cwd || null;
+  let title = prior?.history.title || null;
+  let usage = prior?.history.usage || null; // usage of the last main-agent API message: the size of the context now
+  const at = { offset: prior?.offset || 0 };
+
+  for await (const e of readJsonl(file, { from: at.offset, at })) {
     if (!cwd && e.cwd) cwd = e.cwd;
     if (e.type === 'ai-title' && e.aiTitle) title = e.aiTitle;
     if (e.type === 'custom-title' && e.customTitle) title = e.customTitle;
@@ -422,7 +587,7 @@ async function parseHistory(sessionId, file) {
       }
     }
   }
-  return { sessionId, cwd, title, usage, items };
+  return { history: { sessionId, cwd, title, usage, items }, tools, offset: at.offset };
 }
 
 /**
