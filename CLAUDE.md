@@ -27,7 +27,10 @@ Claude Wrapper — a VS Code extension (macOS only) around a copy of Claude-AI's
   the page speaks with the system voice. The microphone is its recording and Whisper recognition
   (hidden without the extension, off while its STT is off); it queues the speaker and the microphone
   among the windows, so the chat's phrases wait for their turn, by priority (questions and permission
-  requests first, then messages, then thinking; the same inside the chat's queue, voice `PRIORITY`);
+  requests first, then messages, then thinking; the same inside the chat's queue, voice `PRIORITY`;
+  equal ones wait for each other). While the answer to a question or a permission request is listened
+  for, the chat says nothing else and keeps the microphone (no turns for other windows); then "Doing
+  it" / "Cancelling", and the queue goes on with the phrase the request cut off;
   headphones or speakers come from macOS
   (`system_profiler`, extension.js `defaultAudioOutput`), as the webview gets no device names.
 - `server/public/index.html` — the chat page. In the extension it is loaded right into the webview
@@ -37,7 +40,9 @@ Claude Wrapper — a VS Code extension (macOS only) around a copy of Claude-AI's
   its microphone go through the extension to TTS / STT Aloud (extension.js `aloud`). While it
   speaks, a player over the message box goes by phrases, pauses and stops; thinking is read as it
   comes in, sentence by sentence; a speaker on the message or thinking block under the pointer reads
-  that one aloud. A click on an image of the chat or of
+  that one aloud. Its settings (speech, microphone, translation, the gear menu) are each window's
+  own (sessionStorage); a new window starts with the last ones set anywhere. Whether spoken phrases
+  name the project is one setting for all the windows (localStorage, read at each phrase). A click on an image of the chat or of
   the message being written opens it in VS Code's image viewer (a temporary file, extension.js `openImage`).
   With the Translator extension (`ninebits.translator`, its API; extension.js `translator`) a button
   before the speaker's turns translation on and chooses the language (VS Code's or one of the list):

@@ -1094,7 +1094,8 @@ const TEXT_TYPE = /^(text\/|application\/(json|x-ndjson|javascript))/i;
  * the phrase to come); a higher `priority` pauses one being played, which goes on after `resumeText`. 'stop' ends its phrase, 'settings' shows the
  * extension's side bar; { type: 'ttsInfo', info: { available, enabled, driver, langs, stt: { enabled } } } tells
  * it whether to use it (without it the page speaks with the system voice itself and has no
- * microphone). The microphone: { type: 'stt', op: 'start', id } listens (ChatView.listen), answers
+ * microphone). The microphone: { type: 'stt', op: 'start', id, answer } listens (ChatView.listen; answer: an
+ * answer to a prompt is awaited, the microphone is kept), answers
  * { type: 'stt', id, event: 'ready' | 'result' | 'error' | 'end', text, error, message }; 'stop' ends it.
  */
 const ALOUD_ID = 'ninebits.tts-stt-aloud';
@@ -1189,6 +1190,7 @@ function defaultAudioOutput() {
 }
 
 const MIC_WAIT_MS = 8000; // of silence, in one recording
+const MIC_ANSWER_WAIT_MS = 30000; // the same while an answer to a prompt is awaited (TTS / STT Aloud's most)
 const MIC_TURN_MS = 300;  // TTS / STT Aloud's waiters look at the microphone every 100 ms and settle for 100 ms
 const micTurn = () => new Promise((resolve) => setTimeout(resolve, MIC_TURN_MS));
 
@@ -1308,11 +1310,13 @@ class ChatView {
    * The page's microphone: TTS / STT Aloud records a phrase and recognizes it, again and again
    * until the page stops it (a phrase stopped midway is dropped). The microphone is queued among
    * the windows, so a recording holds it only for MIC_WAIT_MS of silence and it is left free for
-   * MIC_TURN_MS after each one: a window waiting for it gets its turn. A person taking it over
-   * (Dictate, Test microphone) ends a recording, which is no phrase then. Any failure but a busy
-   * microphone (TTS / STT Aloud before 1.5.0 rejects then) ends the listening with its reason.
+   * MIC_TURN_MS after each one: a window waiting for it gets its turn. Not while an answer to a
+   * prompt is awaited (`answer`): then it is kept, MIC_ANSWER_WAIT_MS a recording, until the page
+   * stops listening. A person taking it over (Dictate, Test microphone) ends a recording, which is
+   * no phrase then. Any failure but a busy microphone (TTS / STT Aloud before 1.5.0 rejects then)
+   * ends the listening with its reason.
    */
-  async listen(id) {
+  async listen(id, { answer = false } = {}) {
     this.stopMic();
     const run = (this.mic = { id });
     const send = (ev) => this.view?.webview.postMessage({ target: 'claude-wrapper', type: 'stt', id, ...ev });
@@ -1324,7 +1328,7 @@ class ChatView {
     while (api?.stt && this.mic === run) {
       let heard;
       try {
-        heard = await api.stt.record({ waitMs: MIC_WAIT_MS, maxMs: 60000, silenceMs: 1200 });
+        heard = await api.stt.record({ waitMs: answer ? MIC_ANSWER_WAIT_MS : MIC_WAIT_MS, maxMs: 60000, silenceMs: 1200 });
       } catch (e) {
         if (/busy/i.test(e.message)) { await micTurn(); continue; }
         if (this.mic === run) fail(e.message || String(e));
@@ -1336,7 +1340,7 @@ class ChatView {
       // Whisper names what isn't speech in brackets ("[BLANK_AUDIO]", "(music)"): not a phrase.
       if (text && !/^[[(*♪].*[\])*♪]$/.test(text)) send({ event: 'result', text });
       else if (heard.error && !interrupted) { fail(heard.error); break; }
-      await micTurn();
+      if (!answer) await micTurn();
     }
     if (this.mic === run) { this.mic = null; send({ event: 'end' }); }
   }
@@ -1401,7 +1405,7 @@ class ChatView {
       this.translation(m);
     } else if (m.type === 'stt') {
       if (m.op === 'stop') this.stopMic();
-      else if (m.op === 'start') this.listen(m.id);
+      else if (m.op === 'start') this.listen(m.id, { answer: m.answer === true });
     } else if (m.type === 'audioOut') {
       defaultAudioOutput().then((device) => this.post({ type: 'audioOut', device }));
     } else if (m.type === 'state') {

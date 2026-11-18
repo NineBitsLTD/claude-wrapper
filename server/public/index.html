@@ -358,6 +358,9 @@
   .menu-row { display: flex; align-items: center; gap: 6px; padding: 6px 8px; border-radius: 6px; cursor: pointer; font-size: 14px; white-space: nowrap; }
   .menu-row:hover { background: var(--user-bg); }
   .menu-row.strong { font-weight: 600; border-bottom: 1px solid var(--border); border-radius: 6px 6px 0 0; margin-bottom: 2px; }
+  /* A first block of several rows: the line goes under its last one. */
+  .menu-row.strong.joined { border-bottom: 0; margin-bottom: 0; border-radius: 6px; }
+  .menu-row.group-end { border-bottom: 1px solid var(--border); border-radius: 6px 6px 0 0; margin-bottom: 2px; }
   .menu-row.disabled { opacity: .5; cursor: default; }
   button.menu-row { background: none; border: 0; color: inherit; font: inherit; font-size: 14px; text-align: left; }
   button.menu-row:disabled { opacity: .5; cursor: default; }
@@ -915,30 +918,37 @@
 
   // Per-browser convenience storage; the page works without it.
   /**
-   * Settings live in localStorage (shared by all tabs). The working context of a tab — project,
-   * session, model, effort, permission mode — lives in sessionStorage, so switching the project in one
-   * tab leaves the others alone and each tab keeps its own context across reloads. A new tab
-   * starts from the last used project/model/effort/mode ("seed"), but never from another tab's session.
+   * The rest (layout, caches) lives in localStorage, shared by all tabs. The working context of a tab
+   * — project, session, model, effort, permission mode — and the chat's settings live in
+   * sessionStorage (in VS Code a window is a tab), so a change in one tab leaves the others alone and
+   * each tab keeps its own across reloads. A new tab starts from the last used ones ("seed"), but
+   * never from another tab's session.
    * '' in sessionStorage means "explicitly empty" (don't fall back to the seed).
    */
   const TAB_KEYS = {
     'claude.cwd': 'seed', 'claude.model': 'seed', 'claude.effort': 'seed', 'claude.ultracode': 'seed', 'claude.permMode': 'seed',
     'claude.sessionId': 'tab', 'claude.tabId': 'tab',
   };
+  // The chat's settings (speech, microphone, translation, the gear menu) are seeded the same way: a
+  // change in one window's chat (a tab's, in a browser) leaves the chats of the others as they are.
+  const SETTING_PREFIXES = ['claude.voice', 'claude.dictation', 'claude.translate.', 'claude.set.'];
+  const scopeOf = (k) => TAB_KEYS[k] || (SETTING_PREFIXES.some((p) => k.startsWith(p)) ? 'seed' : null);
   const store = {
     get(k) {
       try {
-        if (!(k in TAB_KEYS)) return localStorage.getItem(k);
+        const scope = scopeOf(k);
+        if (!scope) return localStorage.getItem(k);
         const v = sessionStorage.getItem(k);
         if (v !== null) return v === '' ? null : v;
-        return TAB_KEYS[k] === 'seed' ? localStorage.getItem(k) : null;
+        return scope === 'seed' ? localStorage.getItem(k) : null;
       } catch { return null; }
     },
     set(k, v) {
       try {
-        if (k in TAB_KEYS) {
+        const scope = scopeOf(k);
+        if (scope) {
           sessionStorage.setItem(k, v ?? '');
-          if (TAB_KEYS[k] !== 'seed') return;
+          if (scope !== 'seed') return;
         }
         v == null ? localStorage.removeItem(k) : localStorage.setItem(k, v);
       } catch {}
@@ -2765,7 +2775,8 @@
     let seq = 0;
     let open = 0; // the listening whose answers count
     return {
-      start() { open = ++seq; toHost({ type: 'stt', op: 'start', id: open }); },
+      /** forAnswer: an answer to a prompt is awaited, so the microphone isn't left to other windows meanwhile. */
+      start(lang, { forAnswer = false } = {}) { open = ++seq; toHost({ type: 'stt', op: 'start', id: open, answer: forAnswer }); },
       stop() {
         open = 0;
         toHost({ type: 'stt', op: 'stop' });
@@ -2796,7 +2807,7 @@
       start() {
         if (current && current !== this) current._stop();
         current = this;
-        sttBackend.start(this.lang);
+        sttBackend.start(this.lang, { forAnswer: !!this.forAnswer });
       }
       stop() { this.abort(); }
       abort() {
@@ -2892,6 +2903,8 @@
     const dictating = () => dictation.enabled && audioOut.isHeadphones() && document.visibilityState === 'visible' && focused;
     /** The prompt the next phrase answers, if answering by voice is on and it has been announced. */
     const activePrompt = () => (promptsOn && queue[0]?.armed ? queue[0] : null);
+    // The speech waits while an answer is awaited (voice.drain lets it go on once that is over).
+    const released = () => setTimeout(() => voice.drain(), 0);
     const WAIT_TEXT = tl('🎙️ I’ll start listening for the answer once I’ve read the request out');
 
     function render() {
@@ -2945,6 +2958,7 @@
       if (p && Date.now() - p.started > LISTEN_MS) {
         status(p, tl('🎙️ The time for a voice answer is up — answer with a button'));
         queue.shift(); // the buttons stay; listen for the next prompt or for dictation
+        released();
         return startRec();
       }
       if (!p && !dictating()) return;
@@ -2952,6 +2966,7 @@
       r.lang = LOCALE;
       r.continuous = true;
       r.interimResults = true;
+      r.forAnswer = !!p;
       // Routed when a phrase arrives: a pending permission prompt takes priority over dictation.
       r.onresult = (e) => {
         for (let i = e.resultIndex; i < e.results.length; i++) {
@@ -3022,6 +3037,7 @@
     function decide(p, decision, text) {
       stopRec();
       queue.splice(queue.indexOf(p), 1);
+      clearTimeout(p.expiry);
       const verdict = decision === 'deny' ? tl('denied') : decision === 'always' ? tl('allowed for the whole chat') : tl('allowed');
       status(p, '🎙️ ' + tl('“{0}” → {1} by voice', text, verdict));
       p.onDecision(decision);
@@ -3045,6 +3061,7 @@
       promptsOn = v;
       store.set('claude.voiceAnswer', v ? 'on' : 'off');
       update();
+      released();
     }
 
     // --- menu ---
@@ -3202,13 +3219,21 @@
         if (!p || p.armed) return;
         p.armed = true;
         p.started = Date.now(); // LISTEN_MS counts from here
+        // A long recognition doesn't restart: the end of the time is looked at then.
+        clearTimeout(p.expiry);
+        p.expiry = setTimeout(() => { if (queue[0] === p) { stopRec(); startRec(); } }, LISTEN_MS + 100);
         if (!promptsOn || p !== queue[0]) return;
         // Already listening (dictation): the next phrase goes to this prompt.
         if (rec?.ready) status(p, listenText(p), true);
         else stopRec(); // a recognizer that is still starting gets restarted for the prompt
         setTimeout(startRec, 0);
       },
-      update,
+      update: () => { update(); released(); },
+      /** The prompt whose answer is listened for now (the speech waits meanwhile), or null. */
+      awaiting() {
+        const p = activePrompt();
+        return p && Date.now() - p.started <= LISTEN_MS ? p.id : null;
+      },
       /** The page starts speaking: the microphone pauses, except in headphones. */
       pause() {
         paused = true;
@@ -3222,12 +3247,14 @@
         if (i < 0) return;
         const wasCurrent = i === 0;
         const [p] = queue.splice(i, 1);
+        clearTimeout(p.expiry);
+        released();
         status(p, ''); // answered by a button; voice decisions leave the queue before this
         if (wasCurrent && promptsOn && queue[0] && !queue[0].armed) status(queue[0], WAIT_TEXT);
         if (wasCurrent) { stopRec(); setTimeout(startRec, 300); }
       },
       /** Run ended: prompts are gone; dictation (if any) goes on. */
-      clear() { queue.length = 0; stopRec(); setTimeout(startRec, 300); },
+      clear() { queue.length = 0; stopRec(); setTimeout(startRec, 300); released(); },
     };
   })();
   audioOut.onChange(() => hearing.update());
@@ -3239,8 +3266,10 @@
    * separately in the 🔊 menu: permission prompts, Claude's answers, tool calls, end of work.
    * Phrases go through one queue, by priority (PRIORITY): a permission prompt or question comes
    * first and pauses what is being read (its phrase is said again after it), messages go before
-   * thinking; the microphone starts listening for the answer when the announcement starts. Through speakers recognition is paused while
-   * anything is spoken (the page's phrases contain "разреш…" / "allow"); in headphones it goes on.
+   * thinking; equal ones wait for each other. The microphone starts listening for the answer when
+   * the announcement starts, and until the answer nothing else is said (a new request waits too):
+   * then "Doing it" / "Cancelling", and the queue goes on. Through speakers recognition is paused
+   * while anything is spoken (the page's phrases contain "разреш…" / "allow"); in headphones it goes on.
    * While anything is spoken the player over the message box goes back and forth by phrases, pauses
    * and stops; a speaker on the message or thinking block under the pointer reads that one aloud.
    */
@@ -3249,13 +3278,14 @@
     const btn = $('voiceBtn');
     const menu = $('voiceMenu');
     const REMIND_AFTER_MS = [30000, 90000];
+    // In the menu in this order. sent: a dictated message read back before it goes.
     const CATS = {
-      permissions: tl('Permission requests'),
-      answers: tl('Claude’s answers'),
+      permissions: tl('Questions, permissions'),
+      thinking: tl('Thinking'),
+      answers: tl('Messages'),
       tools: tl('Command calls'),
       done: tl('Task completion'),
-      sent: tl('Messages being sent'),
-      thinking: tl('Claude’s thinking'),
+      sent: tl('Recognized voice messages'),
     };
     const DEFAULTS = { permissions: true, answers: true, tools: false, done: true, sent: true, thinking: false };
     const CHUNK_CHARS = 220; // Chrome cuts long utterances (~15 s); speak sentence by sentence
@@ -3264,6 +3294,7 @@
     let answerMaxChars = Number(store.get('claude.voiceAnswerMax') ?? 0);
 
     const reminders = new Map(); // permission id -> timeout ids
+    const announced = new Set(); // prompts read out: their answer gets "Doing it" / "Cancelling"
     let enabled = store.get('claude.voice') !== 'off';
     const cats = { ...DEFAULTS };
     try { Object.assign(cats, JSON.parse(store.get('claude.voiceCats') || '{}')); } catch {}
@@ -3445,13 +3476,25 @@
       pump();
     }
 
+    /**
+     * The next phrase to say. While the answer to a question or a permission request is listened for,
+     * only what belongs to it is said (its reminders): the rest waits, the microphone isn't paused
+     * for it, and a new request doesn't cut in.
+     */
+    function nextIndex() {
+      const awaited = hearing.awaiting();
+      return awaited == null ? (queue.length ? 0 : -1) : queue.findIndex((q) => q.permId === awaited);
+    }
+
     function pump() {
       if (!current && !queue.length) held = false;
       renderMenu();
       syncPlayer();
       if (current || held) return;
-      if (!queue.length) { hearing.resume(); return; }
-      const item = (current = queue.shift());
+      const next = nextIndex();
+      if (next < 0) { hearing.resume(); return; }
+      const [item] = queue.splice(next, 1);
+      current = item;
       syncPlayer();
       delete item.again;
       item.onStart?.();
@@ -3681,9 +3724,13 @@
      * name, dashes and underscores read as spaces; '' without a project (the phrases then go without it).
      */
     const projectName = () => baseName(String(cwd || '').replace(/\/+$/, '')).replace(/[-_]+/g, ' ').trim();
+    // Whether phrases name the project: one setting for all the windows (localStorage, read at each
+    // phrase), so that switching it in one window changes them all at once.
+    const PROJECT_NAME_KEY = 'claude.projectInSpeech';
+    const sayProject = () => store.get(PROJECT_NAME_KEY) !== 'off';
     /** A phrase in `lang`: withProject (name, ...args) when there is a project, else without (...args). */
     const inProject = (lang, withProject, without, ...args) => {
-      const name = projectName();
+      const name = sayProject() ? projectName() : '';
       return name ? tlIn(lang, withProject, name, ...args) : tlIn(lang, without, ...args);
     };
     /** A block of text as queue items: its first phrase with the prefix, in that phrase's language. */
@@ -3763,9 +3810,10 @@
       render();
       if (menu.hidden) return;
       menu.innerHTML = '';
-      const row = (label, checked, onChange, { disabled = false, strong = false } = {}) => {
+      const row = (label, checked, onChange, { disabled = false, strong = false, cls = '', hint = '' } = {}) => {
         const l = document.createElement('label');
-        l.className = 'menu-row' + (strong ? ' strong' : '') + (disabled ? ' disabled' : '');
+        l.className = 'menu-row' + (strong ? ' strong' : '') + (cls ? ' ' + cls : '') + (disabled ? ' disabled' : '');
+        if (hint) l.title = hint;
         const cb = document.createElement('input');
         cb.type = 'checkbox';
         cb.checked = checked;
@@ -3783,7 +3831,11 @@
         store.set('claude.voice', v ? 'on' : 'off');
         if (!v) stopAll();
         renderMenu();
-      }, { strong: true });
+      }, { strong: true, cls: 'joined' });
+      row(tl('Say the project’s name'), sayProject(), (v) => {
+        store.set(PROJECT_NAME_KEY, v ? 'on' : 'off');
+        renderMenu();
+      }, { disabled: !enabled, cls: 'group-end', hint: tl('Phrases begin with the project’s name, so that it is clear which window speaks. For all the windows.') });
       const hostSettings = () => {
         const b = Object.assign(document.createElement('button'), { type: 'button', className: 'menu-row', textContent: tl('Voice, speed and volume…'), title: tl('The settings of TTS / STT Aloud') });
         b.onclick = (e) => { e.stopPropagation(); toggleMenu(false); toHost({ type: 'tts', op: 'settings' }); };
@@ -3810,7 +3862,7 @@
         sel.value = String(answerMaxChars);
         sel.disabled = !enabled || !cats.answers;
         sel.onchange = () => { answerMaxChars = Number(sel.value); store.set('claude.voiceAnswerMax', sel.value); };
-        l.append(tl('Read the answer'), sel);
+        l.append(tl('Read the message'), sel);
         menu.appendChild(l);
       }
       if (useHost()) {
@@ -3909,12 +3961,23 @@
     }
     render();
 
-    function resolved(id) {
+    /**
+     * A prompt is over: answered, withdrawn, or its run ended. Answered while its answer was awaited
+     * (`verdict`: allow | deny), "Doing it" / "Cancelling" is said first; then the queue goes on, the
+     * phrase the prompt cut off again from its start.
+     */
+    function resolved(id, verdict) {
+      const wasAnnounced = announced.delete(id);
+      const awaited = wasAnnounced || hearing.awaiting() === id || current?.permId === id;
       hearing.stop(id);
       for (const t of reminders.get(id) || []) clearTimeout(t);
       reminders.delete(id);
       drop((q) => q.permId === id);
       if (current?.permId === id) cancelCurrent();
+      if (verdict && awaited && on('permissions')) {
+        const lang = speechLang('');
+        queue.unshift({ cat: 'permissions', lang, text: tlIn(lang, verdict === 'deny' ? 'Cancelling' : 'Doing it') });
+      }
       pump();
     }
 
@@ -4008,15 +4071,13 @@
         const { lang, text: said } = describe(ev);
         const text = said + (hearing.active && ev.tool_name !== 'AskUserQuestion' ? '. ' + tlIn(lang, 'Answer by voice or with a button') : '');
         // onDone: dropped or interrupted before it started (e.g. "Stop speech") — listen anyway.
-        enqueue([{ cat: 'permissions', permId: ev.id, lang, text, onStart: arm, onDone: arm }]);
+        enqueue([{ cat: 'permissions', permId: ev.id, lang, text, onStart: () => { announced.add(ev.id); arm(); }, onDone: arm }]);
         reminders.set(ev.id, REMIND_AFTER_MS.map((ms) => setTimeout(() => {
           if (on('permissions') && !queue.some((q) => q.permId === ev.id)) {
             enqueue([{ cat: 'permissions', permId: ev.id, lang, text: inProject(lang, 'Claude is still waiting for your answer on the project {0}', 'Claude is still waiting for your answer') }]);
           }
         }, ms)));
       },
-      /** Short spoken confirmation of a voice decision. */
-      confirm(text) { if (on('permissions')) enqueue([{ cat: 'permissions', text }]); },
       /** A finished text block of Claude's answer. */
       answer(md) {
         if (!on('answers')) return;
@@ -4063,6 +4124,8 @@
         ]);
       },
       resolved,
+      /** An awaited answer is no longer listened for (time up, voice answers off): the queue goes on. */
+      drain: () => pump(),
       /** Run ended: prompts are gone; queued answers and the end-of-work phrase still play. */
       clear() { for (const id of [...reminders.keys()]) resolved(id); hearing.clear(); },
       stopAll,
@@ -4576,7 +4639,7 @@
   }
 
   function answerPermission(card, id, allow, extra = {}) {
-    voice.resolved(id);
+    voice.resolved(id, allow ? 'allow' : 'deny');
     card.querySelectorAll('button, input').forEach((b) => (b.disabled = true));
     fetch('/api/permission', {
       method: 'POST',
@@ -4812,7 +4875,6 @@
       if (decision === 'always') alwaysAllowed.add(ev.tool_name);
       if (decision === 'deny' && ev.tool_use_id) deniedByUser.add(ev.tool_use_id);
       answerPermission(card, ev.id, decision !== 'deny');
-      voice.confirm(voice.say(decision === 'deny' ? 'Cancelled' : 'OK, doing it', ''));
     });
     // After listen(): the prompt is listened for once its announcement starts.
     voice.permission(ev);
@@ -6132,7 +6194,7 @@
       ctrlEnter: { label: tl('Send with ⌘/Ctrl+Enter'), hint: tl('Enter — new line'), def: false },
       autoTitle: { label: tl('Session titles'), hint: tl('Claude comes up with a title for a new session after the first answer'), def: true },
       diffs: { label: tl('Edits as a diff'), hint: tl('Edit/Write are shown as line changes'), def: true },
-      thinking: { label: tl('Claude’s thinking'), hint: tl('A summary of what Claude thinks over before answering (from the next run)'), def: true },
+      thinking: { label: tl('Thinking'), hint: tl('A summary of what Claude thinks over before answering (from the next run)'), def: true },
     };
     const values = {};
     for (const [k, d] of Object.entries(DEFS)) values[k] = (store.get('claude.set.' + k) ?? (d.def ? '1' : '0')) === '1';
