@@ -11,7 +11,13 @@ Claude Wrapper — a VS Code extension (macOS only) around a copy of Claude-AI's
   Processes, Subagents and MCP Servers (one view, so VS Code draws no sashes between them: the view has its own —
   drag a section's top border, double-click for the default shares, heights remembered; rows of two
   or three lines; header toggles for finished entries and all
-  projects; a click on a process, a subagent or an MCP server opens its details in an editor preview;
+  projects, their icons showing the state; a click on a process, a subagent or an MCP server opens its details in an editor preview;
+  the History's search box looks through what was said in the sessions — this project's or every one's
+  (`server/session-index.js`: an index in the data dir, read further as transcripts grow), in English
+  too through the Translator, found English lines shown translated; a found place opens in the preview.
+  The chat's Claude searches the same index with MCP tools (`server/sessions-mcp.js`, server
+  `session-history`: search_past_sessions, read_past_session), which every chat run gets through
+  `--mcp-config` and `--allowedTools` (read-only, no prompts);
   MCP servers come from the chat's running Claude process and are managed there, otherwise the last
   list seen is shown and can be checked); the chat webview `claudeWrapper.chat` in the secondary side
   bar (in VS Code its gear menu has no MCP part — that is the side bar's). While Claude works, the chat's Stop and a

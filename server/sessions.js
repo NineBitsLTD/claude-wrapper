@@ -774,4 +774,8 @@ async function mergeDir(from, to, tag) {
   }
 }
 
-module.exports = { listProjects, listSessions, countSessions, loadHistory, parentOf, markAsCli, deleteSession, subagentFile, relinkProject, encodeProjectDir, projectDirsFor };
+module.exports = {
+  listProjects, listSessions, countSessions, loadHistory, parentOf, markAsCli, deleteSession, subagentFile, relinkProject, encodeProjectDir, projectDirsFor,
+  // for session-index.js
+  readJsonl, continuesAt, userText, listSessionFiles, findSessionFile,
+};

@@ -12,9 +12,11 @@
  *   button sit in the container's title bar). The projects are its main list (a click opens the
  *   folder in VS Code; a folder that is gone asks where the project went and moves its history;
  *   buttons: a new window, move the history); under it the collapsible sections History (sessions of
- *   this window's folder; a click opens one in the chat, the trash moves it to the Trash), Processes
- *   and Subagents (a click opens the details in an editor preview, Preview; the cross stops it; header
- *   toggles for finished entries and all projects, `filters`) and MCP Servers (McpView: those of the
+ *   this window's folder; a click opens one in the chat, the trash moves it to the Trash; a search box
+ *   through what was said in them, server/session-index.js, a found place opens in the preview),
+ *   Processes and Subagents (a click opens the details in an editor preview, Preview; the cross stops
+ *   it; header switches for finished entries and all projects, `filters`, their icons showing the
+ *   state) and MCP Servers (McpView: those of the
  *   chat's running Claude process, managed there — sign in, reconnect, enable, disable; otherwise the
  *   last list seen, and a check). Rows have two or three lines; the open sections are polled every
  *   few seconds while the view is visible.
@@ -168,6 +170,21 @@ const LIST_CSS = `
   header:hover .tools button, .sec:focus-within header .tools button, header .tools button.on { visibility: visible; }
   header .tools button:hover { background: var(--vscode-toolbar-hoverBackground); }
   header .tools button.on { background: var(--vscode-inputOption-activeBackground, var(--vscode-toolbar-activeBackground)); }
+  /* A switch shows its state by its icon (and its hint says what a click does). */
+  .tgl .i-on, .tgl.on .i-off { display: none; }
+  .tgl.on .i-on { display: contents; }
+  /* The History's search: a box under the header; the found words marked. */
+  .search { display: flex; gap: 4px; align-items: center; padding: 4px 8px 4px 20px; flex: none; }
+  .search[hidden] { display: none; }
+  .search input { flex: 1; min-width: 0; font: inherit; padding: 3px 6px; border-radius: 2px; color: var(--vscode-input-foreground);
+    background: var(--vscode-input-background); border: 1px solid var(--vscode-input-border, transparent); }
+  .search input:focus { outline: 1px solid var(--vscode-focusBorder); outline-offset: -1px; }
+  .search button { border: 0; background: none; cursor: pointer; width: 22px; height: 22px; padding: 0; border-radius: 5px;
+    display: flex; align-items: center; justify-content: center; }
+  .search button:hover { background: var(--vscode-toolbar-hoverBackground); }
+  .search button.on { background: var(--vscode-inputOption-activeBackground, var(--vscode-toolbar-activeBackground)); }
+  mark { background: var(--vscode-editor-findMatchHighlightBackground, rgba(234, 92, 0, .33)); color: inherit; border-radius: 2px; }
+  .hit .name { white-space: normal; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; }
 `;
 
 const LIST_SCRIPT = `
@@ -260,14 +277,53 @@ const LIST_SCRIPT = `
       if (body) { body.innerHTML = m.html; applyFolds(body); }
     } else if (m.type === 'sections') {
       for (const [name, c] of Object.entries(m.collapsed || {})) setCollapsed(name, c, false);
-      for (const [name, on] of Object.entries(m.toggles || {})) document.querySelector('[data-hact="toggle:' + name + '"]')?.classList.toggle('on', on);
+      for (const [name, on] of Object.entries(m.toggles || {})) {
+        const b = document.querySelector('[data-hact="toggle:' + name + '"]');
+        if (!b) continue;
+        b.classList.toggle('on', on);
+        b.title = on ? b.dataset.onTitle : b.dataset.offTitle;
+      }
+      // A search under way (the view was shown again): its box and words back.
+      for (const [name, q] of Object.entries(m.searches || {})) {
+        const bar = secEl(name)?.querySelector('.search');
+        if (!bar || !q) continue;
+        bar.hidden = false;
+        bar.querySelector('input').value = q;
+      }
     } else if (m.type === 'expand') {
       setCollapsed(m.name, false, true);
       secEl(m.name)?.scrollIntoView({ block: 'nearest' });
     }
   });
+  // The search box of a section: its words go to the extension a moment after the typing stops.
+  let searchTimer = null;
+  const sendSearch = (input, now) => {
+    clearTimeout(searchTimer);
+    const go = () => vscode.postMessage({ type: 'search', section: input.closest('.sec').dataset.sec, q: input.value.trim() });
+    if (now) go(); else searchTimer = setTimeout(go, 450);
+  };
+  const closeSearch = (bar) => {
+    const input = bar.querySelector('input');
+    bar.hidden = true;
+    if (input.value) { input.value = ''; sendSearch(input, true); }
+  };
+  document.addEventListener('input', (e) => { if (e.target.matches('.search input')) sendSearch(e.target, false); });
+  document.addEventListener('keydown', (e) => {
+    if (!e.target.matches('.search input')) return;
+    if (e.key === 'Enter') sendSearch(e.target, true);
+    else if (e.key === 'Escape') closeSearch(e.target.closest('.search'));
+  });
   document.addEventListener('click', (e) => {
     const tool = e.target.closest('[data-hact]');
+    if (tool?.dataset.hact === 'search') {
+      const sec = tool.closest('.sec');
+      const bar = sec.querySelector('.search');
+      if (!bar.hidden) return closeSearch(bar);
+      if (sec.classList.contains('collapsed')) setCollapsed(sec.dataset.sec, false, true);
+      bar.hidden = false;
+      bar.querySelector('input').focus();
+      return;
+    }
     if (tool) return vscode.postMessage({ type: 'header', section: tool.closest('.sec').dataset.sec, act: tool.dataset.hact });
     const header = e.target.closest('header');
     if (header) { const sec = header.closest('.sec'); return setCollapsed(sec.dataset.sec, !sec.classList.contains('collapsed'), true); }
@@ -303,8 +359,8 @@ const codicon = (id) => `<i class="codicon codicon-${id.replace('~spin', ' codic
 
 /**
  * One row of a list: a node with the row and its children.
- * @param {object} o { key, depth, title, tooltip, icon (a codicon id), cls, lines: [text], lineCls,
- *   acts: [{ act, title, icon }], x: { act, title, icon = 'close' } (last), kids: [html] }
+ * @param {object} o { key, depth, title (or html: the title as HTML), tooltip, icon (a codicon id), cls, lines: [text],
+ *   lineCls, acts: [{ act, title, icon }], x: { act, title, icon = 'close' } (last), kids: [html] }
  */
 function rowHtml(o) {
   const kids = o.kids || [];
@@ -312,7 +368,7 @@ function rowHtml(o) {
   return `<div class="node" data-key="${escapeHtml(o.key)}"><div class="row ${o.cls || ''}" style="--depth:${o.depth || 0}">` +
     `<span class="fold${kids.length ? '' : ' none'}" data-act="fold">${codicon('chevron-down')}</span>` +
     `<div class="main"><div class="title" data-act="open" title="${escapeHtml(o.tooltip || '')}"><span class="ico">${o.icon ? codicon(o.icon) : ''}</span>` +
-    `<span class="name">${escapeHtml(String(o.title).slice(0, 300))}</span></div>${lines}</div>` +
+    `<span class="name">${o.html ?? escapeHtml(String(o.title).slice(0, 300))}</span></div>${lines}</div>` +
     [...(o.acts || []), o.x && { icon: 'close', ...o.x }].filter(Boolean)
       .map((a) => `<button class="x" data-act="${a.act}" title="${escapeHtml(a.title)}">${codicon(a.icon)}</button>`).join('') +
     `</div><div class="kids">${kids.join('')}</div></div>`;
@@ -360,7 +416,7 @@ class Sidebar {
     for (const name of ['history', 'processes', 'agents', 'mcp']) collapsed[name] = this.collapsed.has(name);
     const toggles = {};
     for (const n of filters.names) toggles[n] = filters.get(n);
-    this.view?.webview.postMessage({ type: 'sections', collapsed, toggles });
+    this.view?.webview.postMessage({ type: 'sections', collapsed, toggles, searches: { history: this.sections.history.query || '' } });
   }
   /** The open sections; the polling (force = false) skips those that don't poll now. */
   async refresh(force = false) {
@@ -368,11 +424,15 @@ class Sidebar {
   }
   async refreshSection(sec, force = false) {
     if (!this.view || this.collapsed.has(sec.name)) return;
+    const turn = (sec.turn = (sec.turn || 0) + 1);
     let html;
     try {
-      sec.data = await sec.load();
+      const data = await sec.load();
+      if (turn !== sec.turn) return; // a newer load (a search typed on) is under way
+      sec.data = data;
       html = sec.render(sec.data);
     } catch (e) {
+      if (turn !== sec.turn) return;
       html = emptyHtml(t('Error: {0}', e.message));
     }
     if (force || html !== this.html[sec.name]) {
@@ -380,6 +440,14 @@ class Sidebar {
       this.view?.webview.postMessage({ type: 'section', name: sec.name, html });
     }
     preview?.sync(sec);
+  }
+  /** A section drawn again from what it has (its data changed in place, e.g. translations came). */
+  redraw(sec) {
+    if (!this.view || this.collapsed.has(sec.name) || !sec.data) return;
+    const html = sec.render(sec.data);
+    if (html === this.html[sec.name]) return;
+    this.html[sec.name] = html;
+    this.view.webview.postMessage({ type: 'section', name: sec.name, html });
   }
   /** Opens a section and scrolls to it (the counts under the chat's input ask for that). */
   expand(name) {
@@ -395,6 +463,12 @@ class Sidebar {
     }
     const sec = this.sections[m?.section];
     if (!sec) return;
+    if (m.type === 'search' && sec.search) {
+      sec.search(m.q);
+      if (sec.query) this.view?.webview.postMessage({ type: 'section', name: sec.name, html: emptyHtml(t('Searching…')) });
+      this.html[sec.name] = null;
+      return this.refreshSection(sec, true);
+    }
     if (m.type === 'header') {
       if (sec.header?.(m.act)) return;
       if (m.act === 'newChat') return vscode.commands.executeCommand('claudeWrapper.newChat');
@@ -414,15 +488,21 @@ class Sidebar {
 /** The side bar's skeleton: the projects' body, then the sections with their header buttons. */
 function sidebarBody() {
   const tool = (act, icon, title) => `<button data-hact="${act}" title="${escapeHtml(title)}">${codicon(icon)}</button>`;
-  const section = (name, label, tools) => `<section class="sec sub" data-sec="${name}"><div class="sash" title="${escapeHtml(t('Drag to change the height; double-click — even shares'))}"></div><header title="${escapeHtml(label)}">` +
+  // A switch: its icon shows the state, its hint what a click does (postState sets them).
+  const toggle = (name, [offIcon, offTitle], [onIcon, onTitle]) => `<button class="tgl" data-hact="toggle:${name}" ` +
+    `data-off-title="${escapeHtml(offTitle)}" data-on-title="${escapeHtml(onTitle)}" title="${escapeHtml(offTitle)}">` +
+    `<span class="i-off">${codicon(offIcon)}</span><span class="i-on">${codicon(onIcon)}</span></button>`;
+  const section = (name, label, tools, under = '') => `<section class="sec sub" data-sec="${name}"><div class="sash" title="${escapeHtml(t('Drag to change the height; double-click — even shares'))}"></div><header title="${escapeHtml(label)}">` +
     `<span class="chev">${codicon('chevron-down')}</span><span class="label">${escapeHtml(label)}</span><span class="tools">${tools}</span></header>` +
-    `<div class="body"></div></section>`;
+    `${under}<div class="body"></div></section>`;
+  const historySearch = `<div class="search" hidden><input type="text" spellcheck="false" placeholder="${escapeHtml(t('Search the sessions…'))}">` +
+    toggle('histAllProjects', ['folder', t('Search All Projects')], ['folder-library', t('Search Only This Project')]) + '</div>';
   return '<div class="layout"><div class="sec main" data-sec="projects"><div class="body"></div></div>' +
-    section('history', t('History'), tool('newChat', 'add', t('New Chat')) + tool('refresh', 'refresh', t('Refresh'))) +
-    section('processes', t('Processes'), tool('toggle:procFinished', 'history', t('Show Finished Processes')) +
-      tool('toggle:procAllProjects', 'folder-library', t('Show Processes of All Projects')) + tool('refresh', 'refresh', t('Refresh'))) +
-    section('agents', t('Subagents'), tool('toggle:agentFinished', 'history', t('Show Subagents Finished in the Last Hour')) +
-      tool('toggle:agentAllProjects', 'folder-library', t('Show Subagents of All Projects')) + tool('refresh', 'refresh', t('Refresh'))) +
+    section('history', t('History'), tool('search', 'search', t('Search in the Sessions')) + tool('newChat', 'add', t('New Chat')) + tool('refresh', 'refresh', t('Refresh')), historySearch) +
+    section('processes', t('Processes'), toggle('procFinished', ['history', t('Show Finished Processes')], ['pass-filled', t('Hide Finished Processes')]) +
+      toggle('procAllProjects', ['folder', t('Show Processes of All Projects')], ['folder-library', t('Only This Project’s Processes')]) + tool('refresh', 'refresh', t('Refresh'))) +
+    section('agents', t('Subagents'), toggle('agentFinished', ['history', t('Show Subagents Finished in the Last Hour')], ['pass-filled', t('Hide Finished Subagents')]) +
+      toggle('agentAllProjects', ['folder', t('Show Subagents of All Projects')], ['folder-library', t('Only This Project’s Subagents')]) + tool('refresh', 'refresh', t('Refresh'))) +
     section('mcp', t('MCP Servers'), tool('check', 'refresh', t('Check the MCP Servers'))) +
     '</div>';
 }
@@ -470,14 +550,83 @@ class ProjectsView extends Section {
 
 // --- History: the sessions of this window's folder; a click opens one in the chat ---
 
+/** The found words marked in a text (HTML): the stems of the search, case and endings aside. */
+function markWords(text, stems) {
+  const words = (stems || []).filter(Boolean).map((w) => w.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'));
+  if (!words.length) return escapeHtml(text);
+  const re = new RegExp(`(${words.join('|')})`, 'giu');
+  return String(text).split(re).map((part, i) => (i % 2 ? `<mark>${escapeHtml(part)}</mark>` : escapeHtml(part))).join('');
+}
+
+const ROLE_ICON = { user: 'account', assistant: 'hubot', thinking: 'lightbulb', tool: 'tools', compact: 'fold' };
+const roleLabel = (role) => ({ user: t('You'), assistant: 'Claude', thinking: t('Thinking'), tool: t('Tool'), compact: t('Compaction summary') })[role] || role;
+
+/** The search in English too, through the Translator (Claude thinks in English); '' without it. */
+async function englishOf(query) {
+  if (!translator.info().available) return '';
+  try {
+    const r = await translator.translate(query, 'en');
+    return r.text && r.text.trim().toLowerCase() !== query.trim().toLowerCase() ? r.text.trim() : '';
+  } catch {
+    return '';
+  }
+}
+
+/** A text in VS Code's language through the Translator; null when it already is, or it can't. */
+async function inUiLanguage(text) {
+  if (!translator.info().available) return null;
+  try {
+    const r = await translator.translate(text, translator.info().uiLang);
+    return r.text || null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * History: the sessions of this window's folder. Its search box looks through what was said in
+ * them (server/session-index.js), in English too when the Translator is there; found English
+ * lines are shown translated. histAllProjects: every project.
+ */
 class HistoryView extends Section {
-  constructor() { super('history'); }
+  constructor() {
+    super('history');
+    this.query = '';
+    this.translated = new Map(); // a found line -> in VS Code's language
+  }
+  polls() { return !this.query; }
+  search(q) { this.query = String(q || '').trim(); }
   async load() {
     const cwd = folder();
+    if (this.query) return { search: await this.find(cwd) };
     if (!cwd) return null;
     return (await getJson('/api/sessions?cwd=' + encodeURIComponent(cwd))).sessions;
   }
-  render(sessions) {
+  async find(cwd) {
+    const all = filters.get('histAllProjects');
+    if (!all && !cwd) return { noFolder: true };
+    const q = this.query;
+    const params = new URLSearchParams({ q });
+    const english = await englishOf(q);
+    if (english) params.set('q2', english);
+    if (all) params.set('all', '1'); else params.set('cwd', cwd);
+    const r = await getJson('/api/sessions/search?' + params);
+    r.all = all;
+    return r;
+  }
+  /** The found lines that are in another language get translated, one after another. */
+  async translateLines(r) {
+    if (!translator.info().available) return;
+    const lines = r.sessions.slice(0, 12).flatMap((s) => s.hits.filter((h) => h.role !== 'tool').map((h) => h.snippet)).filter((x) => !this.translated.has(x));
+    for (const line of lines) {
+      if (this.data?.search !== r) return; // another search came meanwhile
+      this.translated.set(line, await inUiLanguage(line));
+      sidebar?.redraw(this);
+    }
+  }
+  render(data) {
+    if (data?.search) return this.renderSearch(data.search);
+    const sessions = data;
     if (!sessions) return emptyHtml(t('Open a project folder'));
     if (!sessions.length) return emptyHtml(t('No sessions in this folder yet'));
     return sessions.map((s) => {
@@ -490,7 +639,36 @@ class HistoryView extends Section {
       });
     }).join('');
   }
+  renderSearch(r) {
+    if (r.noFolder) return emptyHtml(t('Open a project folder'));
+    if (!r.sessions.length) return emptyHtml(t('Nothing found'));
+    // Shown now: its lines in another language get translated (they are drawn again as they come).
+    if (!r.translating) { r.translating = true; setTimeout(() => this.translateLines(r), 0); }
+    const count = `<div class="note">${escapeHtml(t('{0} matches in {1} sessions', r.total, r.sessions.length))}</div>`;
+    return count + r.sessions.map((s) => rowHtml({
+      key: 's:' + s.id, title: s.title, tooltip: `${s.title}\n${t('session {0}', s.id)}`, icon: 'comment',
+      lines: [t('{0} · {1} matches', fmtDate(s.updated), s.count), r.all && s.cwd ? shortPath(s.cwd) : ''],
+      kids: s.hits.map((h) => {
+        const translated = this.translated.get(h.snippet);
+        return rowHtml({
+          key: 'h:' + s.id + ':' + h.uuid, depth: 1, cls: 'hit', icon: ROLE_ICON[h.role] || 'comment',
+          html: markWords(translated || h.snippet, r.stems), tooltip: translated ? h.snippet : '',
+          lines: [`${roleLabel(h.role)} · ${fmtDate(h.ts)}`],
+        });
+      }),
+    })).join('');
+  }
   act(type, key) {
+    const r = this.data?.search;
+    if (r) {
+      const [kind, id, uuid] = String(key).split(':');
+      const s = r.sessions?.find((x) => x.id === id);
+      if (!s || type !== 'open') return;
+      if (kind === 's') return vscode.commands.executeCommand('claudeWrapper.openSession', { id: s.id, title: s.title });
+      const hit = s.hits.find((h) => h.uuid === uuid);
+      if (hit) Preview.show(new SessionHitSubject(s, hit, r.stems));
+      return;
+    }
     const s = this.data?.find((x) => x.id === key);
     if (!s) return;
     if (type === 'open') vscode.commands.executeCommand('claudeWrapper.openSession', s);
@@ -826,6 +1004,11 @@ const DETAIL_CSS = `
   pre { background: var(--vscode-textCodeBlock-background); padding: 8px 10px; border-radius: 4px; white-space: pre-wrap; word-break: break-word;
     font: var(--vscode-editor-font-size) var(--vscode-editor-font-family); margin: 4px 0 14px; }
   pre.out { max-height: 50vh; overflow: auto; word-break: break-all; }
+  /* A found place: the messages around it, the found one marked, the found words too. */
+  .msg.hit { border-left: 3px solid var(--vscode-focusBorder); padding-left: 10px; }
+  .msg h3 { margin-top: 10px; }
+  mark { background: var(--vscode-editor-findMatchHighlightBackground, rgba(234, 92, 0, .33)); color: inherit; border-radius: 2px; }
+  details > summary { cursor: pointer; color: var(--vscode-descriptionForeground); margin: -8px 0 8px; }
   ul { margin: 4px 0 14px; padding-left: 20px; }
   li { margin: 2px 0; word-break: break-word; }
   .note { color: var(--vscode-descriptionForeground); font-size: .92em; }
@@ -847,6 +1030,8 @@ const DETAIL_SCRIPT = `
     root.dataset.key = e.data.key;
     root.innerHTML = e.data.html;
     window.scrollTo(0, keep);
+    // A found place, shown first: brought into view.
+    if (!keep) root.querySelector('.msg.hit')?.scrollIntoView({ block: 'center' });
     const out = root.querySelector('pre.out');
     if (out && atEnd) out.scrollTop = out.scrollHeight;
   });
@@ -911,6 +1096,51 @@ class Preview {
     if (m?.type === 'ready') return this.render();
     if (m?.type === 'refresh') return this.reload();
     this.subject?.act(m?.type);
+  }
+}
+
+/** A found place of the History's search: the messages around it, in VS Code's language when they aren't. */
+class SessionHitSubject {
+  constructor(s, hit, stems) {
+    this.s = s;
+    this.hit = hit;
+    this.stems = stems;
+    this.key = 'hit:' + s.id + ':' + hit.uuid;
+    this.f = null;
+    this.error = null;
+  }
+  title() { return t('Session: {0}', this.s.title.slice(0, 40)); }
+  live() { return false; }
+  sync() { return false; }
+  async refresh() {
+    if (this.f) return;
+    try {
+      this.f = await getJson(`/api/sessions/fragment?id=${this.s.id}&uuid=${encodeURIComponent(this.hit.uuid)}`);
+      this.translate();
+    } catch (e) {
+      this.error = e.message;
+    }
+  }
+  async translate() {
+    for (const it of this.f.items) {
+      if (it.role === 'tool' || preview?.subject !== this) continue;
+      const text = await inUiLanguage(it.text);
+      if (!text) continue;
+      it.translation = text;
+      if (preview?.subject === this) preview.render();
+    }
+  }
+  html() {
+    const head = `<h2>${esc(this.s.title)}</h2><div class="sub">${esc([fmtDate(this.s.updated), this.s.cwd ? shortPath(this.s.cwd) : '', t('session {0}', this.s.id.slice(0, 8))].filter(Boolean).join(' · '))}</div>` +
+      `<div class="bar">${button('open', t('Open the Session in the Chat'))}</div>`;
+    if (this.error) return head + `<p class="warn">${esc(this.error)}</p>`;
+    if (!this.f) return head + `<p class="note">${esc(t('Loading…'))}</p>`;
+    return head + this.f.items.map((it, i) => `<div class="msg${i === this.f.at ? ' hit' : ''}"><h3>${esc(roleLabel(it.role))} · ${esc(fmtDate(it.ts))}</h3>` +
+      `<pre>${markWords(it.translation || it.text, this.stems)}</pre>` +
+      (it.translation ? `<details><summary>${esc(t('Original'))}</summary><pre>${markWords(it.text, this.stems)}</pre></details>` : '') + '</div>').join('');
+  }
+  act(type) {
+    if (type === 'open') openSessionInChat(this.s.id, this.s.title);
   }
 }
 
@@ -1518,10 +1748,10 @@ let historyView = null, processesView = null, agentsView = null, mcpView = null;
  * Toggles of the Processes and Subagents sections (buttons in their headers), kept per workspace:
  * procFinished / agentFinished — finished ones too (subagents: of the last hour);
  * procAllProjects / agentAllProjects — every project, not only this window's folder (processes: on
- * by default).
+ * by default); histAllProjects — the History's search in every project.
  */
 const filters = {
-  names: ['procFinished', 'procAllProjects', 'agentFinished', 'agentAllProjects'],
+  names: ['procFinished', 'procAllProjects', 'agentFinished', 'agentAllProjects', 'histAllProjects'],
   // Processes of every project by default: what runs on the machine matters, wherever it came from.
   defaults: { procAllProjects: true },
   get(name) { return !!ctx.workspaceState.get('filter.' + name, !!this.defaults[name]); },
