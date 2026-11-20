@@ -168,5 +168,8 @@
   "Session: {0}": "Сессия: {0}",
   "Open the Session in the Chat": "Открыть сессию в чате",
   "Loading…": "Загрузка…",
-  "Original": "Оригинал"
+  "Original": "Оригинал",
+  "Configured after this Claude process started": "Настроен после запуска этого процесса Claude",
+  "Not in the running Claude process": "Нет в запущенном процессе Claude",
+  "A new chat, or “End” under the last answer, starts one with it": "Новый чат или «Завершить» под последним ответом запустят процесс с ним"
 }

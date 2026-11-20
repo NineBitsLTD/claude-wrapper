@@ -4,9 +4,10 @@
  * sessions of the project — what was said, decided and tried before, also before a compaction of
  * the session at hand — through the index the History's search keeps (session-index.js).
  *
- * claude starts it from the run's --mcp-config (server.js historyMcp): Node — in VS Code its
- * Electron as Node — with `--cwd <project folder>`; NINEBITS_DATA_DIR points to the wrapper's data,
- * so the index is the History's. Its tools only read, and the run allows them (--allowedTools).
+ * It is registered like any MCP server (history-mcp.js: `claude mcp add --scope user`, through a
+ * launcher), so claude starts it — VS Code's Electron as Node — in the project's folder, the project
+ * it searches (or `--cwd <folder>`); NINEBITS_DATA_DIR points to the wrapper's data, so the index is
+ * the History's. Its tools only read; the wrapper's chats allow them (--allowedTools).
  *   search_past_sessions { query, alternatives?, all_projects? }  the best places, with their ids
  *   read_past_session { session_id, uuid?, before?, after? }      the messages around a place
  * Nothing goes to stdout but the protocol: logs go to stderr.

@@ -16,7 +16,8 @@
  *   extension host is shared with other extensions): no .env, no signal handlers, no env edits.
  *   Its chats' claude processes are held outside the window (held-run.js, run-holder.js): a page
  *   or a window that reloads finds them again through /api/chat/attach.
- * Every chat run gets the MCP server of the project's earlier sessions (sessions-mcp.js, historyMcp).
+ * The MCP server of the project's earlier sessions (sessions-mcp.js) is registered like any other
+ * (history-mcp.js); a chat run allows its tools, which only read.
  * - Standalone, for working on the page in a browser:
  *     node server.js                  # http://127.0.0.1:3000, settings from .env in the data dir
  *     PORT=4000 CLAUDE_CWD=~/project node server.js
@@ -43,7 +44,7 @@ const SERVER_VERSION = (() => { try { return require('../package.json').version;
  * win. Names that came from the file are removed from process.env once everything is configured, so
  * they don't reach the claude processes.
  */
-const { ENV_FILE, RUN_DIR, DATA_DIR, fromData } = require('./paths');
+const { ENV_FILE, RUN_DIR, fromData } = require('./paths');
 const envFromFile = !STANDALONE ? [] : (() => {
   const before = new Set(Object.keys(process.env));
   try {
@@ -63,6 +64,7 @@ const { handleSearch } = require('./search');
 const { readAudioTags, readAudioCover } = require('./audio-tags');
 const cliControl = require('./cli-control');
 const held = require('./held-run');
+const historyMcp = require('./history-mcp');
 const sessionIndex = require('./session-index');
 const fileSearch = require('./file-search');
 
@@ -234,8 +236,9 @@ async function handleChat(req, res) {
   const runId = crypto.randomUUID();
   // Ultracode: standing orchestration through the Workflow tool, on top of any effort level.
   if (body.ultracode === true) args.push('--settings', JSON.stringify({ ultracode: true }));
-  // The project's earlier sessions, searchable by Claude (sessions-mcp.js); its tools only read.
-  args.push('--mcp-config', JSON.stringify({ mcpServers: { [HISTORY_MCP]: historyMcp(cwd) } }), '--allowedTools', HISTORY_TOOLS.join(','));
+  // The project's earlier sessions, searchable by Claude (sessions-mcp.js, registered like any MCP
+  // server, history-mcp.js): its tools only read, a chat doesn't ask for them.
+  args.push('--allowedTools', historyMcp.TOOLS.join(','));
 
   // Arguments are passed as an array (no shell), so the prompt cannot inject commands.
   // childEnv() makes every shell command of the run report its process group (see processes.js).
@@ -289,17 +292,6 @@ async function handleChat(req, res) {
   }
   followPage(run, res);
   child.flow?.();
-}
-
-// The MCP server of the project's earlier sessions: Node — in VS Code its Electron, told to be Node
-// (claude's own environment has that variable removed, cleanEnv) — on the wrapper's data dir.
-const HISTORY_MCP = 'session-history';
-const HISTORY_TOOLS = ['search_past_sessions', 'read_past_session'].map((t) => `mcp__${HISTORY_MCP}__${t}`);
-function historyMcp(cwd) {
-  return {
-    type: 'stdio', command: process.execPath, args: [path.join(__dirname, 'sessions-mcp.js'), '--cwd', cwd],
-    env: { ELECTRON_RUN_AS_NODE: '1', NINEBITS_DATA_DIR: DATA_DIR },
-  };
 }
 
 const NDJSON_HEAD = { 'Content-Type': 'application/x-ndjson; charset=utf-8', 'Cache-Control': 'no-cache', 'X-Accel-Buffering': 'no' };

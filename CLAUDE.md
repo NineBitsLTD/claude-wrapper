@@ -15,9 +15,12 @@ Claude Wrapper — a VS Code extension (macOS only) around a copy of Claude-AI's
   the History's search box looks through what was said in the sessions — this project's or every one's
   (`server/session-index.js`: an index in the data dir, read further as transcripts grow), in English
   too through the Translator, found English lines shown translated; a found place opens in the preview.
-  The chat's Claude searches the same index with MCP tools (`server/sessions-mcp.js`, server
-  `session-history`: search_past_sessions, read_past_session), which every chat run gets through
-  `--mcp-config` and `--allowedTools` (read-only, no prompts);
+  Claude searches the same index with MCP tools (`server/sessions-mcp.js`, server `session-history`:
+  search_past_sessions, read_past_session), registered like any MCP server — `claude mcp add --scope
+  user`, through a launcher in the global storage kept pointing to the installed version
+  (`server/history-mcp.js`, at each start; once removed by the user it stays removed) — so it is in
+  every Claude's MCP list, the chats' and a terminal's; the chats allow its read-only tools
+  (`--allowedTools`);
   MCP servers come from the chat's running Claude process and are managed there, otherwise the last
   list seen is shown and can be checked); the chat webview `claudeWrapper.chat` in the secondary side
   bar (in VS Code its gear menu has no MCP part — that is the side bar's). While Claude works, the chat's Stop and a

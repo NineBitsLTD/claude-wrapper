@@ -77,6 +77,11 @@ function startServer(context) {
   inproc = require('./server/inproc.js');
   server.start();
   server.adoptRuns((vscode.workspace.workspaceFolders || []).map((f) => f.uri.fsPath));
+  // Claude's search in the earlier sessions, registered as an MCP server like any other.
+  require('./server/history-mcp.js').registerHistoryMcp({
+    storageDir: context.globalStorageUri.fsPath, serverScript: path.join(__dirname, 'server', 'sessions-mcp.js'), runtime: process.execPath,
+    claudeBin: process.env.CLAUDE_BIN || 'claude', env: require('./server/processes.js').cleanEnv(), state: context.globalState,
+  }).then((r) => r !== 'unchanged' && console.log(`[claude-wrapper] session-history MCP server: ${r}`), (e) => console.warn(`[claude-wrapper] session-history MCP server: ${e.message}`));
 }
 
 const getJson = (p) => inproc.call(server.handleRequest, 'GET', p);
@@ -871,8 +876,10 @@ const MCP_LIVE_ONLY = t('Servers can be enabled, disabled and reconnected while 
 /**
  * The MCP servers of the chat's project. While the chat's Claude process runs (it also waits
  * between messages) they come from it (mcp_status) and can be managed; otherwise the list is the
- * last one seen (the process's start, a check), kept per workspace, and the header's button checks
- * with a short process of its own. Polled only while a server of the running process is connecting.
+ * last one seen (the process's start, a check), kept per workspace. The header's button checks the
+ * configuration too, with a short process of its own: servers added since the running process
+ * started are listed apart, as a new process will have them. Polled only while a server of the
+ * running process is connecting.
  */
 class McpView extends Section {
   constructor() {
@@ -880,6 +887,7 @@ class McpView extends Section {
     this.last = ctx.workspaceState.get('mcp.last', null); // { cwd, at, how: 'run' | 'check', servers }
     this.checking = false;
     this.asked = { runId: null, at: 0 };
+    this.added = { runId: null, names: [] }; // configured since the running process started
   }
   cwd() { return chat?.state.cwd || folder(); }
   runId() { return chat?.state.runId || null; }
@@ -908,20 +916,27 @@ class McpView extends Section {
     await this.ask();
     return this.servers();
   }
-  /** The header's button: the running process's answer, or a short process for the check (seconds). */
+  /**
+   * The header's button: the configuration as a short process sees it (seconds) and, while one runs,
+   * the running process's answer beside it.
+   */
   async check() {
     if (this.checking) return;
-    if (!(await this.ask())) {
-      this.checking = true;
-      this.refresh(true);
-      try {
-        const d = await postJson('/api/session/control', { cwd: this.cwd(), request: { subtype: 'mcp_status' } });
+    this.checking = true;
+    this.refresh(true);
+    try {
+      const live = await this.ask();
+      const d = await postJson('/api/session/control', { cwd: this.cwd(), request: { subtype: 'mcp_status' } });
+      if (live) {
+        const known = new Set((this.servers() || []).map((x) => x.name));
+        this.added = { runId: this.runId(), names: (d.mcpServers || []).map((x) => x.name).filter((n) => !known.has(n)) };
+      } else {
         this.remember(d.mcpServers, 'check');
-      } catch (e) {
-        vscode.window.showErrorMessage(t('Could not check the MCP servers: {0}', e.message));
-      } finally {
-        this.checking = false;
       }
+    } catch (e) {
+      vscode.window.showErrorMessage(t('Could not check the MCP servers: {0}', e.message));
+    } finally {
+      this.checking = false;
     }
     await this.refresh(true);
     preview?.sync(this);
@@ -937,7 +952,13 @@ class McpView extends Section {
     if (!servers) return h + (this.checking ? '' : emptyHtml(t('No data yet: Claude reports its MCP servers when it starts in the chat — or check now')));
     if (!servers.length) return h + emptyHtml(t('No MCP servers are configured for this project'));
     if (!live && !this.checking) h += `<div class="note" title="${escapeHtml(MCP_LIVE_ONLY)}">${escapeHtml(t('As of {0}', fmtDate(this.last.at)))}</div>`;
-    return h + servers.map((s) => {
+    // Configured after the running process started: it doesn't have them, a new one will.
+    const added = live && this.added.runId === this.runId() ? this.added.names.filter((n) => !servers.some((x) => x.name === n)) : [];
+    const addedRows = added.map((name) => rowHtml({
+      key: 'a:' + name, title: name, tooltip: t('Configured after this Claude process started'), icon: 'circle-large-outline', cls: 'dim',
+      lines: [t('Not in the running Claude process'), t('A new chat, or “End” under the last answer, starts one with it')],
+    })).join('');
+    return h + addedRows + servers.map((s) => {
       const tools = s.tools?.length ?? s.toolCount;
       return rowHtml({
         key: 'm:' + s.name, title: s.name, tooltip: s.error || mcpWhere(s) || s.name,
