@@ -82,6 +82,26 @@ function startServer(context) {
     storageDir: context.globalStorageUri.fsPath, serverScript: path.join(__dirname, 'server', 'sessions-mcp.js'), runtime: process.execPath,
     claudeBin: process.env.CLAUDE_BIN || 'claude', env: require('./server/processes.js').cleanEnv(), state: context.globalState,
   }).then((r) => r !== 'unchanged' && console.log(`[claude-wrapper] session-history MCP server: ${r}`), (e) => console.warn(`[claude-wrapper] session-history MCP server: ${e.message}`));
+  updateClaudeCode(context);
+}
+
+/**
+ * Claude Code updates itself only now and then (with autoUpdates off, when asked): once a day, at a
+ * window's start, `claude update` runs in the background. Not before each run — it takes seconds
+ * and the network; running processes keep their version, the next ones start with the new one.
+ * DISABLE_AUTOUPDATER in the environment turns it off, as for Claude Code itself.
+ */
+const CLI_UPDATE_EVERY_MS = 24 * 3600 * 1000;
+function updateClaudeCode(context) {
+  if (process.env.DISABLE_AUTOUPDATER) return;
+  const last = context.globalState.get('cliUpdate.at', 0);
+  if (Date.now() - last < CLI_UPDATE_EVERY_MS) return;
+  context.globalState.update('cliUpdate.at', Date.now()); // the other windows don't start one too
+  execFile(process.env.CLAUDE_BIN || 'claude', ['update'], { env: require('./server/processes.js').cleanEnv(), timeout: 5 * 60000 }, (e, out, err) => {
+    const said = String(out || '').trim().split('\n').pop();
+    if (e) console.warn(`[claude-wrapper] claude update: ${String(err || e.message).trim().split('\n').pop()}`);
+    else console.log(`[claude-wrapper] claude update: ${said}`);
+  });
 }
 
 const getJson = (p) => inproc.call(server.handleRequest, 'GET', p);

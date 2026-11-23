@@ -50,8 +50,13 @@ Claude Wrapper — a VS Code extension (macOS only) around a copy of Claude-AI's
   speaks, a player over the message box goes by phrases, pauses and stops; thinking is read as it
   comes in, sentence by sentence; a speaker on the message or thinking block under the pointer reads
   that one aloud. Its settings (speech, microphone, translation, the gear menu) are each window's
-  own (sessionStorage); a new window starts with the last ones set anywhere. Whether spoken phrases
-  name the project is one setting for all the windows (localStorage, read at each phrase). A click on an image of the chat or of
+  own (sessionStorage); a new window starts with the last ones set anywhere. The history of sent
+  messages (⌘↑/⌘↓) is each project's own (localStorage by folder), so each window has its own. Whether spoken phrases
+  name the project is one setting for all the windows (localStorage, read at each phrase). Remote Control,
+  a switch of the gear menu, makes the running Claude process reachable from the Claude app (Code) or
+  claude.ai/code (the CLI's control request `remote_control`, turned on at each process's start while
+  the switch is on): a line in the log gives its name, address and connection state, and messages
+  sent from there show up as the process takes them. A click on an image of the chat or of
   the message being written opens it in VS Code's image viewer (a temporary file, extension.js `openImage`).
   With the Translator extension (`ninebits.translator`, its API; extension.js `translator`) a button
   before the speaker's turns translation on and chooses the language (VS Code's or one of the list):
@@ -77,7 +82,8 @@ process-wide there: no `.env`, no signal handlers, no `process.env` edits except
 (server/processes.js): without `ELECTRON_RUN_AS_NODE`, `VSCODE_*`, `CLAUDECODE` / `CLAUDE_CODE_*` and
 the wrapper's own variables. Every window runs its own copy: its chats' claude runs and a process
 registry over the shared `<globalStorage>/.run/processes.json` (merged on write). Logs go to the
-extension host's log.
+extension host's log. Once a day a window's start runs `claude update` in the background (not with
+`DISABLE_AUTOUPDATER`).
 
 A chat's claude runs outside the window, in a detached holder process of its own
 (`server/run-holder.js`, spoken to over a Unix socket through `server/held-run.js`, which looks like a

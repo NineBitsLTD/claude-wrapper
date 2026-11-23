@@ -5170,6 +5170,20 @@
     else if (!note && n) n.remove();
   }
 
+  /**
+   * A message this page didn't send — from the Claude app or claude.ai/code (Remote Control): its
+   * bubble, marked; a waiting process is working again.
+   */
+  function foreignMessage(ev, state) {
+    const c = ev.message?.content;
+    const text = (typeof c === 'string' ? c : (c || []).filter((x) => x.type === 'text').map((x) => x.text).join('\n')).trim();
+    if (!text) return;
+    const bubble = el('div', 'msg user', text);
+    bubble.append(Object.assign(document.createElement('div'), { className: 'queue-note', textContent: '📱 ' + tl('sent from the Claude app') }));
+    decorateUserBubble(bubble, { uuid: ev.uuid, ts: new Date().toISOString() });
+    if (runWaiting) wakeRun(state, bubble, text);
+  }
+
   function markDelivered(content, uuid) {
     const text = typeof content === 'string'
       ? content
@@ -5461,6 +5475,7 @@
         setCliCommands(ev.commands);
         applyModelCatalog(ev.models, ev.defaultModel);
         setOutputStyles(ev.outputStyles, ev.outputStyle);
+        remote.started();
         break;
       case 'rate_limit_event':
         usageMeter.fromEvent(ev.rate_limit_info);
@@ -5500,6 +5515,7 @@
           thinkingLabel(state, false);
         }
         if (ev.subtype === 'commands_changed') setCliCommands(ev.commands);
+        if (ev.subtype === 'bridge_state') remote.bridge(ev.state);
         if (ev.subtype === 'notification' && ev.text) el('div', 'status', '🔔 ' + ev.text);
         // Auto-denied without a prompt (auto mode's classifier, dontAsk, a deny rule): shown at once.
         if (ev.subtype === 'permission_denied') markDenied(ev.tool_use_id, ev.decision_reason || DENIAL_TYPES[ev.decision_reason_type] || ev.decision_reason_type);
@@ -5592,6 +5608,7 @@
           // Each taken user message gets its uuid: rewind / continue-from-here need it.
           const b = markDelivered(ev.message?.content, ev.uuid) || (state.firstBubble && !state.firstBubble.dataset.uuid ? state.firstBubble : null);
           if (b && ev.uuid) setBubbleUuid(b, ev.uuid);
+          else if (!b) foreignMessage(ev, state);
           break;
         }
         // The summary that replaced the history comes as a plain user message after compact_boundary.
@@ -5739,6 +5756,7 @@
       spinner.stop();
       compactNote.end();
       pauseNote.hide();
+      remote.ended();
       finishRunningTools();
       clearTasks();
       voice.clear();
@@ -5982,16 +6000,28 @@
 
   /**
    * History of sent messages, like a shell: ⌘↑ / ⌘↓ (Ctrl on other systems) in the input walk
-   * back and forth; past the newest entry the unsent draft comes back. Shared by all tabs.
+   * back and forth; past the newest entry the unsent draft comes back. Each project has its own
+   * (a VS Code window is a project), kept across restarts; the chat taken to another project takes
+   * that one's.
    */
   const inputHistory = (() => {
-    const KEY = 'claude.inputHistory';
-    const MAX = 200;
+    const KEY = 'claude.inputHistory:'; // + the project's folder
+    const MAX = 100;
+    const TEXT_MAX = 10000; // a longer message isn't kept (the storage of all the projects is small)
     const isMac = /Mac|iPhone|iPad/.test(navigator.platform || navigator.userAgent);
     let items = [];
-    try { items = JSON.parse(store.get(KEY) || '[]'); } catch {}
+    let key = null;
     let pos = null; // index while browsing; null = editing the draft
     let draft = '';
+    try { localStorage.removeItem('claude.inputHistory'); } catch {} // the old one, shared by every window
+    /** The history of the chat's project as stored now (another chat of it may have added to it), but not while browsing it. */
+    function sync() {
+      const k = KEY + (cwd || '');
+      if (k === key && pos !== null) return;
+      if (k !== key) pos = null;
+      key = k;
+      try { items = JSON.parse(store.get(key) || '[]'); } catch { items = []; }
+    }
 
     $('histKeys').textContent = isMac ? '⌘↑/⌘↓' : 'Ctrl+↑/↓';
 
@@ -6008,6 +6038,7 @@
       // Handled here, before the slash-command list and the caret movement of the textarea.
       e.preventDefault();
       e.stopImmediatePropagation();
+      sync();
       if (!items.length) return;
       if (e.key === 'ArrowUp') {
         if (pos === null) { draft = promptEl.value; pos = items.length; }
@@ -6025,12 +6056,13 @@
     return {
       /** A message was sent: remember it (no consecutive duplicates) and stop browsing. */
       add(text) {
+        sync();
         pos = null;
         draft = '';
-        if (items[items.length - 1] === text) return;
+        if (text.length > TEXT_MAX || items[items.length - 1] === text) return;
         items.push(text);
         if (items.length > MAX) items = items.slice(-MAX);
-        store.set(KEY, JSON.stringify(items));
+        store.set(key, JSON.stringify(items));
       },
     };
   })();
@@ -6186,6 +6218,54 @@
   const runControl = (request) => postJson('/api/chat/control', { runId, request });
   const sessionControl = (request, sid = sessionId) => postJson('/api/session/control', { sessionId: sid, cwd, request });
 
+  /**
+   * Remote Control (a switch of the gear menu): the chat's running Claude process is reachable from
+   * the Claude app (Code) or claude.ai/code — the CLI's control request remote_control — under the
+   * project's name; turned on at each process's start while the switch is on. A line in the log says
+   * so, with the session's address and the connection's state; messages sent from there come into
+   * the log as the process takes them.
+   */
+  const remote = (() => {
+    const STATES = { ready: tl('waiting for a connection'), connected: tl('connected'), reconnecting: tl('reconnecting…'), disconnected: tl('disconnected'), failed: tl('failed') };
+    let note = null, url = '', name = '', state = '';
+    const nameOf = () => `${String(cwd || '').replace(/\/+$/, '').split('/').pop() || 'Claude'} · Claude Wrapper`;
+    function draw() {
+      if (!note) note = el('div', 'status remote-note');
+      note.textContent = '📱 ' + tl('Remote Control: in the Claude app, Code → “{0}”', name) + (state ? ` (${STATES[state] || state})` : '');
+      if (url) {
+        const a = Object.assign(document.createElement('a'), { href: url, target: '_blank', rel: 'noopener', textContent: tl('open in the browser') });
+        note.append(' · ', a);
+      }
+    }
+    async function enable() {
+      if (!runId) return;
+      name = nameOf();
+      try {
+        const r = await runControl({ subtype: 'remote_control', enabled: true, name });
+        url = r.session_url || '';
+        draw();
+      } catch (e) {
+        note?.remove();
+        note = null;
+        el('div', 'error', tl('Remote Control could not be turned on: {0}', tlMsg(e.message)));
+      }
+    }
+    async function disable() {
+      note?.remove();
+      note = null; url = ''; state = '';
+      if (runId) await runControl({ subtype: 'remote_control', enabled: false }).catch(() => {});
+    }
+    return {
+      /** A process has started (its initialize answered): on, if the switch is. */
+      started() { if (settings.get('remoteControl')) enable(); },
+      set(on) { if (on) enable(); else disable(); },
+      /** The connection's state (system bridge_state). */
+      bridge(s) { state = s || ''; if (note) draw(); },
+      /** The process has ended: so has its Remote Control session. */
+      ended() { note = null; url = ''; state = ''; },
+    };
+  })();
+
   // --- settings (gear menu) ---
   const settings = (() => {
     const DEFS = {
@@ -6195,6 +6275,7 @@
       autoTitle: { label: tl('Session titles'), hint: tl('Claude comes up with a title for a new session after the first answer'), def: true },
       diffs: { label: tl('Edits as a diff'), hint: tl('Edit/Write are shown as line changes'), def: true },
       thinking: { label: tl('Thinking'), hint: tl('A summary of what Claude thinks over before answering (from the next run)'), def: true },
+      remoteControl: { label: 'Remote Control', hint: tl('Continue this chat from the Claude app (Code) or claude.ai/code. A claude.ai subscription is needed; while it is on, the conversation is kept on Anthropic’s servers too'), def: false },
     };
     const values = {};
     for (const [k, d] of Object.entries(DEFS)) values[k] = (store.get('claude.set.' + k) ?? (d.def ? '1' : '0')) === '1';
@@ -6222,7 +6303,7 @@
         l.className = 'menu-row';
         l.title = d.hint;
         const cb = Object.assign(document.createElement('input'), { type: 'checkbox', checked: values[k] });
-        cb.onchange = () => { values[k] = cb.checked; store.set('claude.set.' + k, cb.checked ? '1' : '0'); apply(); };
+        cb.onchange = () => { values[k] = cb.checked; store.set('claude.set.' + k, cb.checked ? '1' : '0'); apply(); if (k === 'remoteControl') remote.set(cb.checked); };
         l.append(cb, ' ' + d.label);
         menu.appendChild(l);
       }

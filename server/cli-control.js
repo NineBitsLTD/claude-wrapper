@@ -24,13 +24,15 @@ const TIMEOUT_MS = 20000;
 // Tasks: stop one, move the foreground ones to the background (Ctrl+B), read a shell's output.
 // Also: withdraw a queued message, /btw (side_question), MCP servers (toggle, reconnect, sign in),
 // read-only views (permission rules, hooks, /status, plan, cost, export), output style
-// (update_settings, only that key — checked in server.js), reloading skills/plugins/styles.
+// (update_settings, only that key — checked in server.js), reloading skills/plugins/styles, Remote
+// Control on and off (remote_control: the Claude app and claude.ai/code reach the running process).
 const RUN_SUBTYPES = new Set([
   'interrupt', 'set_model', 'set_permission_mode', 'get_context_usage', 'mcp_status', 'apply_flag_settings', 'get_settings',
   'stop_task', 'background_tasks', 'get_task_output', 'cancel_async_message', 'side_question',
   'mcp_toggle', 'mcp_reconnect', 'mcp_authenticate',
   'list_permission_rules', 'get_hooks_listing', 'get_status', 'get_session_cost', 'get_plan', 'export_conversation',
   'update_settings', 'reload_skills', 'reload_plugins', 'reload_output_styles',
+  'remote_control',
 ]);
 const SESSION_SUBTYPES = new Set([
   'rewind_files', 'get_context_usage', 'rename_session', 'generate_session_title', 'mcp_status', 'side_question',

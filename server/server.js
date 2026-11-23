@@ -726,6 +726,12 @@ async function handleChatControl(req, res) {
     request = { subtype: 'apply_flag_settings', settings };
   }
   if (request.subtype === 'get_settings') request = { subtype: 'get_settings' };
+  if (request.subtype === 'remote_control') {
+    // On or off, under a name; the rest of the CLI's request (secrets, reattaching) is for its own hosts.
+    if (typeof request.enabled !== 'boolean') return sendJson(res, 400, { error: 'Bad enabled' });
+    const name = typeof request.name === 'string' && request.enabled ? request.name.trim().slice(0, 80) : '';
+    request = { subtype: 'remote_control', enabled: request.enabled, ...(name ? { name } : {}) };
+  }
   if (request.subtype === 'stop_task' || request.subtype === 'get_task_output') {
     if (!TASK_ID_RE.test(request.task_id || '')) return sendJson(res, 400, { error: 'Bad task_id' });
     request = { subtype: request.subtype, task_id: request.task_id };
